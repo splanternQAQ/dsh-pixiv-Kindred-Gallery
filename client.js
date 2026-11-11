@@ -1624,6 +1624,10 @@ function DoneFx({ perfect, text, tone }) {
 
     const CSS = `
 [data-pg-page]{display:flex;flex-direction:column;gap:12px;padding:10px 12px 18px;min-height:0;color:var(--dsw-alias-label-primary,inherit);font-size:13px;}
+[data-pg-page][data-pg-theme="dark"]{background:#0f141c;}
+[data-pg-page][data-pg-theme="light"]{background:#ffffff;}
+[data-pg-modal][data-pg-theme="dark"]{background:rgba(5,8,13,.78);}
+[data-pg-lightbox][data-pg-theme="dark"]{background:rgba(0,0,0,.88);}
 [data-pg-head]{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
 [data-pg-brand]{font-size:16px;font-weight:700;letter-spacing:.02em;}
 [data-pg-signal]{display:inline-flex;align-items:center;gap:5px;font-size:10px;line-height:16px;padding:2px 7px;border-radius:999px;background:rgba(127,127,127,.10);border:1px solid rgba(127,127,127,.18);white-space:nowrap;}
@@ -2223,7 +2227,11 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-avg="darkgreen"]{color:#4ade80;background:rgba(21,128,61,.42);border-color:rgba(22,163,74,.65);}
 [data-pg-avgs]{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px;}
 [data-pg-dual]{position:absolute;right:8px;top:8px;font-size:12px;font-weight:750;line-height:16px;padding:3px 8px;border-radius:999px;background:rgba(0,0,0,.66);border:1px solid rgba(255,255,255,.12);color:#fff;backdrop-filter:blur(4px);letter-spacing:.02em;}
-[data-pg-num]{color:#e5e7eb;font-variant-numeric:tabular-nums;}
+[data-pg-num]{color:var(--dsw-alias-label-primary,#e5e7eb);font-variant-numeric:tabular-nums;}
+[data-pg-num]:is(input){background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.10));border:1px solid rgba(127,127,127,.34);border-radius:8px;padding:6px 8px;box-sizing:border-box;font:inherit;font-size:12px;}
+[data-pg-num]:is(input):focus{border-color:#3b82f6;outline:none;}
+[data-pg-select] option{background:var(--dsw-alias-bg-layer-1,#171a20);color:var(--dsw-alias-label-primary,#e8eef6);}
+[data-pg-input]:is(input){background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.10));color:var(--dsw-alias-label-primary,#e8eef6);}
 [data-pg-slash]{opacity:.55;margin:0 2px;}
 [data-pg-num="red"]{color:#fca5a5;}
 [data-pg-num="yellow"]{color:#fde68a;}
@@ -10697,6 +10705,16 @@ function GalleryTab2({ onScopeChanged }) {
       '--dsw-alias-bg-layer-3': '#e7eaf0',
       '--dsw-alias-interactive-bg-hover': 'rgba(0,0,0,.07)',
     }
+    /* 深色也要自带一套变量：否则 DSH 处于浅色主题时，插件选「深色」只剩浅色底、看不出来 */
+    const PG_DARK_VARS = {
+      '--dsw-alias-label-primary': '#e8eef6',
+      '--dsw-alias-label-secondary': '#aeb4bd',
+      '--dsw-alias-label-tertiary': '#8b919a',
+      '--dsw-alias-bg-layer-1': '#171a20',
+      '--dsw-alias-bg-layer-2': '#1b1f27',
+      '--dsw-alias-bg-layer-3': '#232833',
+      '--dsw-alias-interactive-bg-hover': 'rgba(255,255,255,.08)',
+    }
     let PG_THEME = 'dark'
     /* 把主题作用到插件的页面根与设置面板（只改插件自己的 DOM，不碰 DSH 全局变量） */
     function pgApplyTheme(t) {
@@ -10707,15 +10725,14 @@ function GalleryTab2({ onScopeChanged }) {
           if (!el) continue
           el.removeAttribute('data-pg-theme')
           for (const k in PG_THEME_VARS) el.style.removeProperty(k)
+          for (const k in PG_DARK_VARS) el.style.removeProperty(k)
         }
       } catch (e) {}
       const paint = (el) => {
         if (!el || !el.setAttribute) return
         el.setAttribute('data-pg-theme', PG_THEME)
-        for (const k in PG_THEME_VARS) {
-          if (PG_THEME === 'light') el.style.setProperty(k, PG_THEME_VARS[k])
-          else el.style.removeProperty(k)
-        }
+        const vars = PG_THEME === 'light' ? PG_THEME_VARS : PG_DARK_VARS
+        for (const k in vars) el.style.setProperty(k, vars[k])
       }
       const SEL = '[data-pg-page], [data-pg-settings-sheet], [data-pg-sheet], [data-pg-modal], [data-pg-lightbox]'
       document.querySelectorAll(SEL).forEach(paint)
