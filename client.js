@@ -7103,7 +7103,7 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
         maxImageMB, maxCacheWorks, archiveFormat, followedOnly, mustPush, minPush, dislike,
         runCards, runImages, runKeywords, runBlacklist, prefAuto, scoreStops, scoreLabels, labelColors,
         authorRules, autoDownload, autoDownloadMinScore, roundScoring, perfectRule, autoSocial, accMode, accInterval,
-        presets, activePreset, lastPresetSwitch, showInSidebar, collapseToMore, projectUrl, kbKeys, uiTheme])
+        presets, activePreset, lastPresetSwitch, showInSidebar, collapseToMore, projectUrl, kbKeys, blacklistText, uiTheme])
       const save = async () => {
         setBusy('save')
         try {
