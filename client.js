@@ -9095,6 +9095,8 @@ function GalleryTab2({ onScopeChanged }) {
       const [oneSummary, setOneSummary] = React.useState(null)
       const [pendingSummary, setPendingSummary] = React.useState(null)
       const multiSlowRef = React.useRef(null)
+      /* 跑多轮被 R-18G 确认弹窗拦下时，这里存「已经跑完哪些轮」，关弹窗后照样能出结算 */
+      const gateBatchRef = React.useRef(null)
       const [notice, setNotice] = React.useState(null)
       const [advice, setAdvice] = React.useState(null)
       const [preflight, setPreflight] = React.useState(null)
@@ -9126,6 +9128,30 @@ function GalleryTab2({ onScopeChanged }) {
   const inDetailRef = React.useRef(false)
   inDetailRef.current = Boolean(openRound) || Boolean(libFocusId)
   const closeSum = () => { setMultiSummary(null); setOneSummary(null); const sl = multiSlowRef.current; multiSlowRef.current = null; if (sl) setAdvice(sl) }
+  /* 跑多轮被拦在门外时的收尾：关弹窗 + 补一张「这一批跑到哪儿了」的结算（有数据才好看） */
+  const stopBatchWithSummary = async (gate) => {
+    const gb = gateBatchRef.current
+    gateBatchRef.current = null
+    gateResume.current = null
+    setGateOpen(null)
+    if (!gb) return
+    const why = (gate && gate.off && gate.off.length)
+      ? ('账号把 ' + gate.off.join(' / ') + ' 滤掉了，搜出来一个都没有')
+      : (gate && gate.unk && gate.unk.length)
+        ? ('读不到 pixiv 的设置页（网络或风控），没法确认 ' + gate.unk.join(' / ') + ' 是不是开着')
+        : '这一轮被拦下了'
+    try {
+      const sum = await buildMultiSummary(gb.rows, Date.now() - gb.t0, gb.n)
+      if (!alive.current) return
+      setMultiSummary({
+        ...sum,
+        title: `跑多轮已暂停 · 完成 ${gb.okCount} / ${gb.n} 轮`,
+        halt: { at: gb.i, n: gb.n, why, okCount: gb.okCount },
+      })
+    } catch (e) {
+      if (alive.current) say('这一批已暂停：' + why, 'warn', 7000)
+    }
+  }
   const queueSummary = (s) => { if (inDetailRef.current) { setPendingSummary({ ...s, parked: true }); return } setOneSummary(s) }
   React.useEffect(() => {
     if (!pendingSummary) return
@@ -9559,14 +9585,15 @@ function GalleryTab2({ onScopeChanged }) {
              确认的 if 里：确认过（skipRatingGate）或本次启动已弹过确认（ratingGateShown）
              之后，快跑被整段跳过、落进旧的刷Pixiv 异步流程——多轮直接报
              「第 1 轮走的是旧 AI 异步流程」，进度条也一直停在「正在等待 pixiv 搜索 / 作品详情（网络）」。 */
-          if (presetUsed && !(opts && opts.skipRatingGate) && !ratingGateShown) {
+          /* 跑之前照旧弹一次分级提示（「这一轮会包含 R-18 / R-18G 作品」+ 设置页链接）：
+             一次会话只弹一次，点「知道了，继续跑」就自己往下跑 —— 不再要求先去开开关。 */
+          if (presetUsed && !ratingGateShown && !(opts && opts.skipRatingGate)) {
             const gateNeed = await ratingGate(presetUsed.ratingMode)
             if (gateNeed) {
               ratingGateShown = true
               gateOpts.current = opts || {}
-              if (!(opts && opts.batch)) gateResume.current = null
+              gateResume.current = null
               setGateOpen(gateNeed)
-              if (alive.current) { setBusy(null); setRunProg(null) }
               return { ok: false, reason: 'rating' }
             }
           }
@@ -9792,18 +9819,20 @@ function GalleryTab2({ onScopeChanged }) {
             : `这一批 ${got} 张卡片已经摆好啦，合不合口味你说了算～`)
         return { total, ms, got, scanned, checked, vPicked, tags, r18, greet, flavor, preset: presetName || '当前设置', strictness: strictLevel, favArtist, rows }
       }
-      const runMany = async (n) => {
+      const runMany = async (n, fromRound = 1) => {
         const total = Math.max(2, Math.min(10, Math.round(Number(n) || 3)))
+        const startAt = Math.max(1, Math.min(total, Math.round(Number(fromRound) || 1)))
         try { localStorage.setItem('pixiv-gallery.multiN', String(total)) } catch { /* ignore */ }
         setMultiSummary(null)
         multiSlowRef.current = null
-        setMultiRun({ i: 1, n: total })
+        setMultiRun({ i: startAt, n: total })
         setBusy('run')
         const t0 = Date.now()
         const rows = []
-        let okCount = 0
+        let okCount = startAt - 1   /* 续跑时前面几轮已经跑完了，计数要接着走，不然结算会写成 0 */
         let stopped = 0
-        for (let i = 1; i <= total; i++) {
+        let lastFail = null
+        for (let i = startAt; i <= total; i++) {
           if (!alive.current) break
           setMultiRun({ i, n: total })
           if (i > 1) say(`跑多轮：第 ${i} / ${total} 轮开始…`, 'good', 2600, true)
@@ -9812,13 +9841,20 @@ function GalleryTab2({ onScopeChanged }) {
           /* 第 1 轮被 R-18 确认弹窗拦下：弹窗已经打开，把「继续」绑成整批重跑。
              以前这里直接 stopped=1 断掉，确认按钮只会补跑单轮——多轮就此丢了。 */
           if (r && r.reason === 'rating') {
-            gateResume.current = () => runMany(total)
+            /* 记下这一批跑到哪儿了，弹窗里要写「已暂停」，关掉后还要出结算 */
+            gateBatchRef.current = { i, n: total, rows: rows.slice(), okCount, t0 }
+            gateResume.current = () => {
+              const gb = gateBatchRef.current
+              const at = gb ? gb.i : 1
+              gateBatchRef.current = null
+              return runMany(total, at)
+            }
             setMultiRun(null)
             setBusy('')
             return
           }
-          if (r && r.ok && r.pending) { stopped = -i; break }
-          if (!r || !r.ok) { stopped = i; break }
+          if (r && r.ok && r.pending) { stopped = -i; lastFail = r; break }
+          if (!r || !r.ok) { stopped = i; lastFail = r || {}; break }
           okCount += 1
           rows.push({ i, ok: true, got: Number(r.got) || 0, round: r.round || '', ms: Number(r.ms) || 0, scanned: Number(r.scanned) || 0, checked: Number(r.checked) || 0, vPicked: Number(r.vPicked) || 0, net: r.net || null })
           if (i < total) await new Promise((res) => setTimeout(res, 1800))
@@ -9838,8 +9874,29 @@ function GalleryTab2({ onScopeChanged }) {
             }
           } catch { /* 总结失败就只用 toast */ }
         }
-        else if (stopped < 0) say(`跑多轮：第 ${-stopped} 轮走的是旧 AI 异步流程，后面的轮次没有继续`, 'warn', 6000)
-        else if (stopped) say(`跑多轮停在第 ${stopped} 轮（已成功 ${okCount} 轮，前面的保留）`, 'warn', 7000)
+        else if (stopped < 0) {
+          say(`跑多轮：第 ${-stopped} 轮走的是旧 AI 异步流程，后面的轮次没有继续`, 'warn', 6000)
+          try {
+            const sum = await buildMultiSummary(rows, ms, total)
+            if (alive.current) setMultiSummary({ ...sum, title: `跑多轮已暂停 · 完成 ${okCount} / ${total} 轮`, halt: { at: -stopped, n: total, why: '这一轮走的是旧的 AI 异步流程，拿不到结果', okCount } })
+          } catch { /* 拿不到详情就只留提示 */ }
+        }
+        else if (stopped) {
+          /* 说清到底为什么停：预检没过（连不上/被限流）、卡住没停干净、缺依赖，还是这一轮自己没出结果 */
+          const lf = lastFail || {}
+          const why = lf.blocked
+            ? '这一轮开跑前没连上 pixiv（预检没过：网络、代理或放流限制），所以根本没开始跑'
+            : lf.busy
+              ? '上一轮卡住没停干净，这一轮没开跑'
+              : lf.reason === 'pixiv-plugin-missing'
+                ? '没装刷 Pixiv 插件，这一轮没跑'
+                : (lf.error ? ('这一轮报错：' + String(lf.error).slice(0, 120)) : '这一轮没跑成（候选不够、被限流或报错）')
+          say(`跑多轮停在第 ${stopped} 轮：${why}（已成功 ${okCount} 轮，前面的保留）`, 'warn', 9000)
+          try {
+            const sum = await buildMultiSummary(rows, ms, total)
+            if (alive.current) setMultiSummary({ ...sum, title: `跑多轮已暂停 · 完成 ${okCount} / ${total} 轮`, halt: { at: stopped, n: total, why, okCount } })
+          } catch { /* 拿不到详情就只留提示 */ }
+        }
       }
       const alive = React.useRef(true)
       // 不再定时轮询：默认就是「绿色满格 · 未检测」，点一下才去测
@@ -10812,6 +10869,10 @@ function GalleryTab2({ onScopeChanged }) {
               return h('div', { 'data-pg-msumnote': '' },
                 `访问 pixiv：${ways.join(' / ')}${tries.length > 1 ? '（换路：' + tries.map((x) => x.route + (x.ok ? ' ✓' : ' ✗')).join(' → ') + '）' : ''}${ns.length > 1 && ways.length > 1 ? ' · 中途换过线路' : ''}`)
             })(),
+            sumShow.halt ? h('div', { 'data-pg-msumnote': '', style: { color: '#fca5a5', marginTop: '6px' } },
+              `停在第 ${sumShow.halt.at} / ${sumShow.halt.n} 轮：${sumShow.halt.why}。`,
+              h('br'),
+              `已完成的 ${sumShow.halt.okCount} 轮都在「已收集到的作品」里；把开关打开、或确认 pixiv 设置页打得开之后，再点一次「跑多轮」补剩下的 ${sumShow.halt.n - sumShow.halt.okCount} 轮。`) : null,
             sumShow.slow ? h('div', { 'data-pg-msumnote': '' }, '⚠️ 有轮次明显偏慢：关掉这张总结后，接着给你网络 / VPN / pixiv 限流的诊断和优化建议。') : null,
             h('div', { 'data-pg-achfoot': '' },
               h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { closeSum(); setView('rounds'); setCollect('all'); setQ(''); setRoundPg(0); try { window.scrollTo(0, 0) } catch { /* ignore */ } } }, '去看看新卡片')))) : null,
@@ -10992,9 +11053,10 @@ function GalleryTab2({ onScopeChanged }) {
             h('div', { 'data-pg-gateact': '' },
               h('button', { 'data-pg-btn': '', onClick: () => setFreshAsk(false) }, '算了，保持时间限制'),
               h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { setFreshAsk(false); pickFresh(0) } }, '知道，不限时间')))) : null,
-        (gateOpen && gateOpen.need && gateOpen.need.length) ? h('div', { 'data-pg-modal': '', 'data-pg-gate': '', onClick: () => { gateResume.current = null; setGateOpen(null) } },
+        (gateOpen && gateOpen.need && gateOpen.need.length) ? h('div', { 'data-pg-modal': '', 'data-pg-gate': '', onClick: () => { if (gateBatchRef.current) { void stopBatchWithSummary(gateOpen); return } gateResume.current = null; setGateOpen(null) } },
           h('div', { 'data-pg-sheet': '', 'data-pg-gatesheet': '', onClick: (e) => e.stopPropagation() },
             h('div', { 'data-pg-gatetitle': '', 'data-tone': 'warn' },
+              gateBatchRef.current ? ('跑多轮已暂停 · 第 ' + gateBatchRef.current.i + ' / ' + gateBatchRef.current.n + ' 轮拦在这里：') : '',
               (gateOpen.off && gateOpen.off.length)
                 ? ('跑之前先开一下：' + gateOpen.off.join(' / '))
                 : (gateOpen.unk && gateOpen.unk.length)
@@ -11008,8 +11070,8 @@ function GalleryTab2({ onScopeChanged }) {
                   : ('接下来这一轮会把 ' + gateOpen.need.join(' 和 ') + ' 的作品一起推进来。要是不太方便的场合，先把窗口收拾一下再继续。'),
               h('br'), h('br'),
               ((gateOpen.off && gateOpen.off.length) || (gateOpen.unk && gateOpen.unk.length))
-                ? ('打开下面这个页面，把 ' + ((gateOpen.off && gateOpen.off.length) ? gateOpen.off.join(' 和 ') : gateOpen.unk.join(' 和 ')) + ' 的开关打开，回到本插件再跑一次：')
-                : ('要是抓回来的结果少得不对劲，就打开下面这个页面，确认 ' + gateOpen.need.join(' 和 ') + ' 的开关是开着的，再跑一次：')),
+                ? ('打开下面这个页面，把 ' + ((gateOpen.off && gateOpen.off.length) ? gateOpen.off.join(' 和 ') : gateOpen.unk.join(' 和 ')) + ' 的开关打开；开好了回来点下面那颗按钮，这一轮会自己接着跑：')
+                : ('下面这个页面能确认 ' + gateOpen.need.join(' 和 ') + ' 的开关是不是开着；确认完点「知道了，继续跑」就行：')),
             h('a', {
               href: 'https://www.pixiv.net/settings/viewing',
               target: '_blank', rel: 'noopener noreferrer',
@@ -11018,26 +11080,31 @@ function GalleryTab2({ onScopeChanged }) {
             h('div', {
               'data-pg-gatenote': '',
               style: { paddingTop: '6px', paddingBottom: '2px', fontSize: '12.5px' },
-            }, '左键直接打开（新标签页）。开完不用重启插件，回来点「继续跑一轮」就行。'),
+            }, '左键直接打开（新标签页）。开完不用重启插件，回来点「知道了，继续跑」就行。'),
             h('div', {
               'data-pg-gatenote': '',
               style: { paddingTop: '0', fontSize: '12.5px' },
             }, '就算开好了，pixiv 那边也要几分钟才认（有时候更久）。等着的时候可以先跑「谁不喜欢白丝萝莉（麻麻）❤️」——那套只刷全年龄，不吃这个开关。'),
+            gateBatchRef.current ? h('div', { 'data-pg-gatenote': '', style: { marginTop: '8px' } },
+              '这一批已经停在这里：后面的 ' + (gateBatchRef.current.n - gateBatchRef.current.i + 1) + ' 轮不会自己往下走，已经跑完的 ' + gateBatchRef.current.okCount + ' 轮都保留在「已收集到的作品」里。') : null,
             h('div', { 'data-pg-achfoot': '' },
-              (gateOpen.off && gateOpen.off.length)
-                ? h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { gateResume.current = null; setGateOpen(null) } }, '知道了')
-                : h('button', {
-                  'data-pg-btn': '', 'data-primary': '',
-                  onClick: () => {
-                    const o = gateOpts.current
-                    const resume = gateResume.current
-                    gateResume.current = null
-                    setGateOpen(null)
-                    /* 多轮被拦时 resume 是整批重跑；单轮走原来的 runNow 续跑 */
-                    if (resume) { setTimeout(resume, 30); return }
-                    if (o) setTimeout(() => { runNow({ ...o, skipRatingGate: true }) }, 30)
-                  },
-                }, '继续跑一轮')))) : null,
+              gateBatchRef.current ? h('button', { 'data-pg-btn': '', style: { marginRight: '8px' }, onClick: () => { void stopBatchWithSummary(gateOpen) } }, '先不跑（看结算）') : null,
+              h('button', {
+                'data-pg-btn': '', 'data-primary': '',
+                /* 确认一下就自己跑：不管账号里那一档开没开，按主人说的「照样推」。
+                   多轮被拦 → 从停下的那一轮接着跑；单轮 → 跳过这次确认直接跑。 */
+                onClick: () => {
+                  const gb = gateBatchRef.current
+                  const o = gateOpts.current
+                  const resume = gateResume.current
+                  gateBatchRef.current = null
+                  gateResume.current = null
+                  setGateOpen(null)
+                  if (gb) { setTimeout(() => { void runMany(gb.n, gb.i) }, 30); return }
+                  if (resume) { setTimeout(resume, 30); return }
+                  if (o) setTimeout(() => { runNow({ ...o, skipRatingGate: true }) }, 30)
+                },
+              }, gateBatchRef.current ? '开好了，继续这一批' : '知道了，继续跑')))) : null,
         updPrompt ? h(UpdatePrompt, {
           info: updPrompt.info,
           onClose: () => setUpdPrompt(null),

@@ -2535,17 +2535,21 @@ const routes = {
 
     '/r18g/check': {
       methods: ['GET'],
-      handler: async () => {
+      handler: async (q) => {
         const now = Date.now()
+        const force = String(q?.get?.('force') || '') === '1'
+        /* mode=work：跳过「读设置页」，直接走作品页探测。运行测试与排错用它单独验证那一条路。 */
+        const onlyWork = String(q?.get?.('mode') || '') === 'work'
         /* 缓存分两档：真的读到了设置页 → 5 分钟内不用再读；
            读不到（搜索兜底 / 全 null）→ 40 秒就让它重试，别让"暂时读不到"钉死 10 分钟。 */
-        const known = r18gCache && r18gCache.source === 'settings'
+        const known = !!r18gCache && (r18gCache.source === 'settings' || r18gCache.source === 'work')
           && ((r18gCache.r18 && r18gCache.r18.enabled !== null && r18gCache.r18.enabled !== undefined)
             || (r18gCache.r18g && r18gCache.r18g.enabled !== null && r18gCache.r18g.enabled !== undefined))
         const keepMs = known ? 5 * 60 * 1000 : 40 * 1000
-        if (r18gCache && now - Number(r18gCache.at || 0) < keepMs) return ok(r18gCache)
+        if (!force && r18gCache && now - Number(r18gCache.at || 0) < keepMs) return ok(r18gCache)
         /* 一、先读账号设置页（准确）；读不到才退回搜索探测（只是猜测）。 */
         try {
+          if (onlyWork) throw new Error('skipped')
           const f = await viewingFlags()
           if (f && (f.r18 !== null || f.r18g !== null)) {
             /* 三态：true 开着 / false 关着 / null 没读到。绝不能用 !== false 把 null 当成开着。 */
@@ -2563,7 +2567,75 @@ const routes = {
             r18gCache = out
             return ok(out)
           }
-        } catch (e) { log('读分级设置页失败，退回搜索探测：' + String(e?.message ?? e)) }
+        } catch (e) { if (!onlyWork) log('读分级设置页失败，退回搜索探测：' + String(e?.message ?? e)) }
+        /* 二、直接打开一张带 R-18 / R-18G 的作品页，看它自己的分级标签。
+           打得开、且分级就是那一档 ＝ 这一档能用；打不开（404/403/被跳登录）＝ 账号没开。
+           这比「搜索采样」准得多：搜索的 mode=all 并不过滤，只能猜。 */
+        try {
+          const st = load()
+          const meta = st.workMeta || {}
+          const idsWith = (want) => Object.keys(meta).filter((id) => {
+            const tags = (meta[id]?.tags || []).map((x) => String(x).toUpperCase())
+            return tags.indexOf(want) >= 0
+          })
+          const pickId = (want, trust) => {
+            const a = idsWith(want)
+            if (a.length) return { id: a[a.length - 1], trust: 'library' }
+            const b = trust ? idsWith(trust) : []
+            if (b.length) return { id: b[b.length - 1], trust: 'library' }
+            return null
+          }
+          const openWork = async (id) => {
+            try {
+              const j = await proxiedJson('https://www.pixiv.net/ajax/illust/' + encodeURIComponent(id), {
+                headers: pixivHeaders('https://www.pixiv.net/artworks/' + id),
+              })
+              if (!j || j.error || j.err) return { id, opened: false, message: String(j?.message || j?.err || '打不开这张作品') }
+              const b = j.body || {}
+              return { id, opened: true, xRestrict: Number(b.xRestrict) || 0, title: String(b.title || '').slice(0, 60) }
+            } catch (e) { return { id, opened: false, message: String(e?.message ?? e) } }
+          }
+          /* 没有本地样本就现搜一张：按 R-18G 标签搜最新的，取列表里 xRestrict>=2 的那件 */
+          const searchId = async (tag, want) => {
+            try {
+              const w = encodeURIComponent(tag)
+              const url = 'https://www.pixiv.net/ajax/search/artworks/' + w + '?word=' + w + '&order=date_d&mode=all&p=1&s_mode=s_tag&type=all&lang=zh'
+              const j = await proxiedJson(url, { headers: pixivHeaders('https://www.pixiv.net/') })
+              const body = j?.body || {}
+              const list = body?.illustManga?.data || body?.illust?.data || []
+              const hit = list.find((x) => Number(x.xRestrict) >= want) || list[0]
+              return hit ? String(hit.id) : ''
+            } catch { return '' }
+          }
+          const judge = async (want, tag) => {
+            let pick = pickId(want, want === 'R-18G' ? 'R-18' : '')
+            if (!pick) {
+              const sid = await searchId(tag, want === 'R-18G' ? 2 : 1)
+              if (sid) pick = { id: sid, trust: 'search' }
+            }
+            if (!pick) return { enabled: null, error: '手上没有可以试开的作品' }
+            const w = await openWork(pick.id)
+            if (!w.opened) return { enabled: false, opened: false, id: pick.id, trust: pick.trust, message: w.message, sample: 0, total: 1 }
+            const okFlag = want === 'R-18G' ? w.xRestrict >= 2 : w.xRestrict >= 1
+            return { enabled: okFlag, opened: true, id: pick.id, trust: pick.trust, xRestrict: w.xRestrict, title: w.title, sample: okFlag ? 1 : 0, total: 1 }
+          }
+          const r18w = await judge('R-18', 'R-18')
+          const r18gw = await judge('R-18G', 'R-18G')
+          if (r18w.enabled !== null || r18gw.enabled !== null) {
+            const out = {
+              enabled: r18gw.enabled,
+              sample: Number(r18gw.sample) || 0,
+              total: 1,
+              r18: r18w,
+              r18g: r18gw,
+              ai: false,
+              source: 'work',
+              at: now,
+            }
+            r18gCache = out
+            return ok(out)
+          }
+        } catch (e) { log('打开作品页验分级失败，退回搜索探测：' + String(e?.message ?? e)) }
         /* 分两档探：账号没在 pixiv 网页里打开某档，「閲覧制限」会把结果直接滤空。
            R-18 与 R-18G 各探一次，前端按预设的 ratingMode 只报缺的那档。 */
         const probe = async (tag, want) => {
