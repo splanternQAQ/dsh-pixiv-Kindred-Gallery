@@ -9648,7 +9648,7 @@ function GalleryTab2({ onScopeChanged }) {
             // 新卡片要立刻出现在第一页最前面：拉完轮次 → 回到主界面 → 清掉筛选/搜索 → 第一页
             try {
               await loadRounds()
-              if (alive.current) { setCollect('all'); setQ(''); setSort('date-desc'); setRoundPg(0); setView('rounds') }
+              if (alive.current) { setCollect('all'); setQ(''); setSort('date-desc'); setRoundPage(1); setView('rounds') }
             } catch { /* ignore */ }
             try { void loadAll() } catch { /* 不同外壳里可能没有 loadAll */ }
             if (!opt.batch) {
@@ -10875,7 +10875,7 @@ function GalleryTab2({ onScopeChanged }) {
               `已完成的 ${sumShow.halt.okCount} 轮都在「已收集到的作品」里；把开关打开、或确认 pixiv 设置页打得开之后，再点一次「跑多轮」补剩下的 ${sumShow.halt.n - sumShow.halt.okCount} 轮。`) : null,
             sumShow.slow ? h('div', { 'data-pg-msumnote': '' }, '⚠️ 有轮次明显偏慢：关掉这张总结后，接着给你网络 / VPN / pixiv 限流的诊断和优化建议。') : null,
             h('div', { 'data-pg-achfoot': '' },
-              h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { closeSum(); setView('rounds'); setCollect('all'); setQ(''); setRoundPg(0); try { window.scrollTo(0, 0) } catch { /* ignore */ } } }, '去看看新卡片')))) : null,
+              h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { closeSum(); setView('rounds'); setCollect('all'); setQ(''); setRoundPage(1); try { window.scrollTo(0, 0) } catch { /* ignore */ } } }, '去看看新卡片')))) : null,
         multiAsk ? h('div', { 'data-pg-modal': '', 'data-pg-multiask': '', onClick: () => setMultiAsk(null) },
           h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation() },
             h('div', { 'data-pg-gatetitle': '' }, '跑多轮：一次跑 ' + multiAsk.n + ' 轮'),
