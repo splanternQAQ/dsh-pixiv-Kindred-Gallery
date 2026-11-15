@@ -17,6 +17,24 @@ window.__ModuleLoader__.load({
     const BASES = ['/pixiv-gallery/api', '/api/pixiv-gallery']
     let BASE = BASES[0]
 
+    /* 前端异常自述：白屏时不能只靠肉眼猜，把渲染期报错送回 gallery.log（服务端 /client-log 只写日志） */
+    try {
+      const pgReport = (kind, msg, stack) => {
+        try {
+          fetch(BASE + '/client-log', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              kind, message: String(msg || '').slice(0, 2000), stack: String(stack || '').slice(0, 4000),
+              url: String(location?.href || ''),
+            }),
+          }).catch(() => { /* 回传失败就算了，别再抛 */ })
+        } catch { /* ignore */ }
+      }
+      window.addEventListener('error', (e) => pgReport('error', e?.message || e?.error?.message, e?.error?.stack || ''))
+      window.addEventListener('unhandledrejection', (e) => pgReport('rejection', e?.reason?.message || e?.reason, e?.reason?.stack || ''))
+    } catch { /* ignore */ }
+
     const asJson = async (res) => {
       let data = null
       try { data = await res.json() } catch { data = null }
@@ -6044,8 +6062,6 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       const [openRound, setOpenRound] = React.useState(null)
       const [roundFx, setRoundFx] = React.useState(null)
       const [settings, setSettings] = React.useState(false)
-      const [updPrompt, setUpdPrompt] = React.useState(null)
-      const [updIntent, setUpdIntent] = React.useState(null)
       const [msg, setMsg] = React.useState('')
       const [tone, setTone] = React.useState('')
       const [libCount, setLibCount] = React.useState(0)
@@ -6063,22 +6079,6 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         resolveBase().then(loadRounds).catch((e) => say(String(e?.message ?? e), 'warn'))
         return () => { alive.current = false }
       }, [loadRounds])
-      /* 每天第一次进主界面查一次更新：有新版本才弹，一天只弹一次（不 force，吃服务端两分钟缓存） */
-      React.useEffect(() => {
-        const KEY = 'pixiv-gallery-updfirst'
-        const todayStr = () => {
-          const d = new Date()
-          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-        }
-        try { if (localStorage.getItem(KEY) === todayStr()) return undefined } catch (e) { /* ignore */ }
-        let live = true
-        resolveBase().then(() => api('/update')).then((r) => {
-          if (!live || !r || !r.update) return
-          try { localStorage.setItem(KEY, todayStr()) } catch (e) { /* ignore */ }
-          setUpdPrompt({ info: r })
-        }).catch(() => { /* 查不到就等明天 */ })
-        return () => { live = false }
-      }, [])
       /* F5：只刷画廊自己的数据，不整页重载（整页会重启 37 个插件，最脆） */
       React.useEffect(() => {
         const fn = () => { try { loadRounds(); api('/library').then((r) => { try { setLibCount((r.works || []).length) } catch { /* ignore */ } }).catch(() => {}) } catch { /* ignore */ } }
@@ -9046,6 +9046,24 @@ function GalleryTab2({ onScopeChanged }) {
         return true
       }, [])
       const [settings, setSettings] = React.useState(false)
+      const [updPrompt, setUpdPrompt] = React.useState(null)
+      const [updIntent, setUpdIntent] = React.useState(null)
+      /* 每天第一次进主界面查一次更新：有新版本才弹，一天只弹一次（不 force，吃服务端两分钟缓存） */
+      React.useEffect(() => {
+        const KEY = 'pixiv-gallery-updfirst'
+        const todayStr = () => {
+          const d = new Date()
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        }
+        try { if (localStorage.getItem(KEY) === todayStr()) return undefined } catch (e) { /* ignore */ }
+        let live = true
+        resolveBase().then(() => api('/update')).then((r) => {
+          if (!live || !r || !r.update) return
+          try { localStorage.setItem(KEY, todayStr()) } catch (e) { /* ignore */ }
+          setUpdPrompt({ info: r })
+        }).catch(() => { /* 查不到就等明天 */ })
+        return () => { live = false }
+      }, [])
       const [msg, setMsg] = React.useState('')
       const [tone, setTone] = React.useState('')
       const [libCount, setLibCount] = React.useState(0)
@@ -11769,7 +11787,7 @@ function GalleryTab2({ onScopeChanged }) {
           try {
             offMain = slots.inject('main', () => slots.register({
               name: 'main', key: 'pixiv-gallery',
-            }, () => h('div', { 'data-pg-main': '' }, h(GalleryTab2, { onScopeChanged: () => {} }))))
+            }, () => h('div', { 'data-pg-main': '' }, h(PgBoundary, null, h(GalleryTab2, { onScopeChanged: () => {} })))))
           } catch { /* ignore */ }
         }
         SHELL_RELOAD = (opts) => mountShell(opts || {})
@@ -11829,7 +11847,7 @@ function GalleryTab2({ onScopeChanged }) {
                 order: 21,
                 label: 'Pixiv 知心画廊',
                 scope: 'session',
-              }, () => h(GalleryTab2, { onScopeChanged: refreshScope }))
+              }, () => h(PgBoundary, null, h(GalleryTab2, { onScopeChanged: refreshScope })))
             })
             const offPin = slots.inject('conversation.session.header.views.actions', () => slots.register({
               name: 'conversation.session.header.views.actions',

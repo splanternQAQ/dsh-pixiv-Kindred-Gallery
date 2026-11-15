@@ -4501,6 +4501,19 @@ const routes = {
       },
     },
 
+    /** 前端异常回传：渲染期报错只写日志，方便定位白屏（不落盘到用户数据里） */
+    '/client-log': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const kind = String(body?.kind || 'error').slice(0, 40)
+        const msg = String(body?.message || '').slice(0, 2000)
+        const stack = String(body?.stack || '').slice(0, 4000)
+        const url = String(body?.url || '').slice(0, 200)
+        log(`[client] ${kind}：${msg}${url ? `（${url}）` : ''}${stack ? `\n${stack}` : ''}`)
+        return ok({ logged: true })
+      },
+    },
+
     /** 跑一轮前的连通性/限流预检：返回 pixiv 搜索耗时、代理线索与失败原因 */
     '/preflight': {
       methods: ['GET'],
