@@ -1,4 +1,4 @@
-﻿function normalizeTagName(raw) {
+function normalizeTagName(raw) {
   const n = String(raw || '').trim()
   if (/^r-?18g$/i.test(n)) return 'R-18G'
   if (/^r-?18$/i.test(n)) return 'R-18'
@@ -20,7 +20,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, symlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -73,8 +73,8 @@ function dshProfileDir() {
  * 不认 PATHEXT，于是直接 ENOENT、status=null、stdout 空 —— 看上去"装完了"却一个依赖都没装。
  * 所以这里优先用 node 目录里的 npm.cmd，找不到就让 shell 去解析 PATHEXT。
  */
-function runNpmInstall(cwd) {
-  const args = ['install', '--omit=dev', '--registry=https://registry.npmmirror.com', '--no-audit', '--no-fund']
+function runNpmInstall(cwd, extra = []) {
+  const args = ['install', ...extra, '--omit=dev', '--registry=https://registry.npmmirror.com', '--no-audit', '--no-fund']
   const opts = { cwd, windowsHide: true, encoding: 'utf8', timeout: 420000, maxBuffer: 16 * 1024 * 1024 }
   const q = (s) => (/[\s"&^|<>]/.test(s) ? '"' + s + '"' : s)
   const cmdline = (bin) => [q(bin), ...args.map(q)].join(' ')
@@ -163,7 +163,7 @@ async function installPixivPlugin(repoArg) {
 import { downloadWork, guessRoot, mapPool } from './lib/downloader.mjs'
 // runFastRound 同样按 mtime 动态加载，改 lib/fastrun.mjs 后无需重启插件
 import { buildTaste } from './lib/taste.mjs'
-import { analyzeStyleProfile } from './lib/vision.mjs'
+import { analyzeStyleProfile, sanitizeTasteStyle } from './lib/vision.mjs'
 import { allPresets, activePreset, savePreset, deletePreset, presetToScrollPatch, normalizePreset } from './lib/presets.mjs'
 import { pageImage, pageImageFull, workMeta, authorLatest, prunePageCache, setCredentialSource, ensureUgoiraFrames, isUgoira, ugoiraFrame, setZipTool, thumbImage, pixivHeaders } from './lib/pixivpages.mjs'
 import { proxiedRequest, proxiedGet, proxiedJson, netStats, detectProxy, currentRoute, routeReport } from './lib/net.mjs'
@@ -184,7 +184,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.2.2'
+const GALLERY_VERSION = '1.2.8'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 
 function bad(status, error, extra = {}) {
@@ -1663,6 +1663,31 @@ const probeNetwork = async () => {
   /* ── 下载任务进度（给作品库卡片的「水杯」动画用） ── */
   const libCache = { at: 0, key: '', data: null }
 let fastProg = null // 快跑实时进度：/fast/run 写、/fast/progress 读
+/* 进度也落一份盘：面板重挂 / 切窗口回来 / DSH 重启之后，前端还知道这一轮跑到哪、是成了还是断了 */
+const progFile = () => join(home, 'run-progress.json')
+let progSavedAt = 0
+const saveFastProg = (force = false) => {
+  try {
+    const at = Date.now()
+    if (!force && at - progSavedAt < 1500) return
+    progSavedAt = at
+    writeFileSync(progFile(), JSON.stringify(fastProg || {}))
+  } catch { /* 写不进去不影响这一轮本身 */ }
+}
+const readFastProg = () => {
+  try {
+    const p = JSON.parse(readFileSync(progFile(), 'utf8'))
+    if (!p || typeof p !== 'object') return null
+    const at = Number(p.updatedAt) || 0
+    const age = Date.now() - at
+    if (p.running && age > 8 * 60 * 1000) {
+      /* 进程重起过：这条 running 是上一次留下的，改成「被中断」而不是永远转圈 */
+      return { ...p, running: false, phase: 'error', error: '上一轮被中断了（DSH 重启或进程退出），这一次没有结果', updatedAt: Date.now() }
+    }
+    if (!p.running && age > 12 * 60 * 60 * 1000) return null
+    return p
+  } catch { return null }
+}
 
 const dlJobs = new Map()
 /* 自动下载失败记录：id -> { at, msg } —— 作品库卡片要能说出「为什么没下下来」 */
@@ -2668,9 +2693,37 @@ const routes = {
             try {
               const t = Date.now()
               const r = await (await loadFastrun()).runFastRound({ home, pixiv, preset: { ...bp, cards: 6 }, skipIds: new Set(), probe: true, dryRun: true, log: (m) => log('[selftest] ' + m) })
-              push('preset:' + bp.name, r.staged > 0, '扫描 ' + r.scanned + ' 件，试选 ' + r.staged + ' 件（' + (Date.now() - t) + 'ms）' + (r.reason ? '；' + r.reason : ''), { staged: r.staged })
+              // 能抓、能筛、正常收尾但一件没选中，是「这批预览里没有能过筛的作品」，不是通路故障；
+              // 只有一件都没扫到（scanned=0）或抛错才算红。
+              const softZero = r.staged === 0 && Number(r.scanned) > 0
+              push('preset:' + bp.name, r.staged > 0 || softZero, '扫描 ' + r.scanned + ' 件，试选 ' + r.staged + ' 件（' + (Date.now() - t) + 'ms）' + (r.reason ? '；' + r.reason : '') + (softZero ? '（通路正常：能抓能筛，这批预览里没有能过筛的）' : ''), { staged: r.staged })
             } catch (e) { push('preset:' + bp.name, false, '试跑失败：' + (e && e.message ? e.message : e)) }
           }
+        }
+        // 6) 看图通路（视觉后端）：新用户最容易卡在这里，所以只探通路、不塞图片（便宜、几秒内回来）。
+        //    三渠道的顺序是 自定义端点 → 本机网关(8326) → 宿主模型；宿主兜底与网关首选都是 DeepSeek。
+        try {
+          const v = await loadVision()
+          const vcfg = load().config || {}
+          const vs = await v.visionStatus(ctx, { config: vcfg })
+          const hub = (vs && vs.hub) || {}
+          const gw = (vs && vs.gateway) || {}
+          const chans = Array.isArray(vs && vs.channels) ? vs.channels : []
+          const custom = String(vcfg.visionBaseUrl || '').trim()
+          push('vision:hub', !!hub.installed, hub.installed
+            ? ('已装 dsh-providers-hub' + (hub.version ? ' ' + hub.version : '') + '：可选增强，不是依赖')
+            : '没装 dsh-providers-hub：不影响使用；设置 → 视觉后端 可一键安装，或填一家自定义端点', { installed: !!hub.installed })
+          push('vision:gateway', !!gw.ok, gw.ok
+            ? ('本机网关正常（127.0.0.1:' + (gw.port || 8326) + '），可列出 ' + (gw.models || 0) + ' 个模型；首选用 DeepSeek（deepseek-official/deepseek-flash 优先）')
+            : ('本机网关不通' + (gw.error ? '：' + String(gw.error).slice(0, 120) : '') + '；这不致命，会退到自定义端点或宿主自带的 DeepSeek 视觉模型'), { models: gw.models || 0 })
+          const first = chans[0] || null
+          push('vision', chans.length > 0, first
+            ? ('看图会走 ' + first.kind + '：' + (first.model || '自动') + (custom ? '（自定义端点在先）' : '')
+              + '；三条都不可用时，最后落到 DSH 宿主的 DeepSeek 视觉模型兜底')
+            : '没有可用的看图渠道：填一家自定义端点，或确认 DSH 里能看到 DeepSeek 模型（兜底那一路也要它）',
+          { channels: chans.map((c) => c.kind + ':' + (c.model || '')) })
+        } catch (e) {
+          push('vision', false, '看图通路检测失败：' + (e && e.message ? e.message : e))
         }
         return ok({ steps, needTags, r18, r18g, created, version: GALLERY_VERSION, ms: Date.now() - t0 })
       },
@@ -2800,6 +2853,8 @@ const routes = {
           try { const s = statfsSync(saveRootOf(pixiv)); diskFree = Number(s.bavail) * Number(s.bsize) } catch { /* ignore */ }
           return {
             ...state.config,
+            // 读的时候也过一遍体检：历史留下的诊断句不进界面
+            tasteStyle: sanitizeTasteStyle(state.config?.tasteStyle),
             followedOnly: Boolean(pcfg.followedOnly),
             mustPushWeight: Number(pcfg.mustPushWeight ?? 5),
             runMustMatch: Number(pcfg.mustPushWeight ?? state.config?.runMustMatch ?? 5),
@@ -2871,6 +2926,14 @@ const routes = {
             }
           }
           if (body.blacklistTags !== undefined) state.config.blacklistTags = String(body.blacklistTags || '').slice(0, 2000)
+          /* 视觉后端：留空 = 自动（自定义端点 → 本机网关 → 宿主模型）；填了就优先走这个 OpenAI 兼容端点，跨机器最稳 */
+          if (body.visionBaseUrl !== undefined) state.config.visionBaseUrl = String(body.visionBaseUrl || '').trim().slice(0, 300)
+          if (body.visionApiKey !== undefined) state.config.visionApiKey = String(body.visionApiKey || '').trim().slice(0, 300)
+          if (body.visionModel !== undefined) state.config.visionModel = String(body.visionModel || '').trim().slice(0, 120)
+          if (body.visionEffort !== undefined) {
+            const e = String(body.visionEffort || '').trim().toLowerCase()
+            state.config.visionEffort = ['fast', 'normal', 'deep'].includes(e) ? e : 'normal'
+          }
           if (body.lowScoreTrash && typeof body.lowScoreTrash === 'object') {
             const lt = body.lowScoreTrash
             const cur = state.config.lowScoreTrash || {}
@@ -2885,6 +2948,11 @@ const routes = {
         if (body.runStrictness !== undefined) {
       state.config.runStrictness = ['strict', 'balance', 'quantity'].includes(String(body.runStrictness)) ? String(body.runStrictness) : 'balance'
     }
+        /* 全局新鲜度：0 = 不限；3650/1825/1095/365 = 近 10/5/3/1 年。默认近 5 年 */
+        if (body.runFreshness !== undefined) {
+          const fd = Number(body.runFreshness)
+          state.config.runFreshness = [0, 3650, 1825, 1095, 365].includes(fd) ? fd : 1825
+        }
     if (body.cardRules && typeof body.cardRules === 'object') {
           const cr = body.cardRules
           const cur = state.config.cardRules?.perfect || {}
@@ -3049,21 +3117,24 @@ const routes = {
           })).slice(0, 50)
         }
         if (body.tasteStyle && typeof body.tasteStyle === 'object') {
-          const s = body.tasteStyle
-          state.config.tasteStyle = {
-            summary: String(s.summary || '').slice(0, 600),
-            keywords: Array.isArray(s.keywords) ? s.keywords.map((x) => String(x).slice(0, 30)).slice(0, 12) : [],
-            avoid: Array.isArray(s.avoid) ? s.avoid.map((x) => String(x).slice(0, 30)).slice(0, 6) : [],
-            source: String(s.source || 'preset').slice(0, 60),
-            model: String(s.model || '').slice(0, 80),
-            updatedAt: String(s.updatedAt || new Date().toISOString()),
-            sampleCount: Number(s.sampleCount) || 0,
-            samples: Array.isArray(s.samples) ? s.samples.slice(0, 12).map((x) => ({
-              id: String(x?.id || ''), title: String(x?.title || '').slice(0, 80), artist: String(x?.artist || '').slice(0, 80),
-              score: x?.score === null || x?.score === undefined ? null : Number(x.score), source: String(x?.source || '').slice(0, 60),
-            })).filter((x) => x.id) : [],
+          // 前端会把读到的整块画像回传（含历史脏数据）—— 这里过一遍体检，坏结论不落盘
+          const clean = sanitizeTasteStyle(body.tasteStyle)
+          if (clean) {
+            state.config.tasteStyle = {
+              summary: String(clean.summary || '').slice(0, 600),
+              keywords: Array.isArray(clean.keywords) ? clean.keywords.map((x) => String(x).slice(0, 30)).slice(0, 12) : [],
+              avoid: Array.isArray(clean.avoid) ? clean.avoid.map((x) => String(x).slice(0, 30)).slice(0, 6) : [],
+              source: String(clean.source || 'preset').slice(0, 60),
+              model: String(clean.model || '').slice(0, 80),
+              updatedAt: String(clean.updatedAt || new Date().toISOString()),
+              sampleCount: Number(clean.sampleCount) || 0,
+              samples: Array.isArray(clean.samples) ? clean.samples.slice(0, 12).map((x) => ({
+                id: String(x?.id || ''), title: String(x?.title || '').slice(0, 80), artist: String(x?.artist || '').slice(0, 80),
+                score: x?.score === null || x?.score === undefined ? null : Number(x.score), source: String(x?.source || '').slice(0, 60),
+              })).filter((x) => x.id) : [],
+            }
+            state.config.tasteStyleAt = Date.now()
           }
-          state.config.tasteStyleAt = Date.now()
         }
         if (Array.isArray(body.tasteTags)) state.config.tasteTags = body.tasteTags.map((x) => String(x).slice(0, 40)).filter(Boolean).slice(0, 40)
         if (typeof body.activePreset === 'string') state.config.activePreset = body.activePreset.slice(0, 40)
@@ -3595,6 +3666,13 @@ const routes = {
         const preset = normalizePreset(body?.preset || activePreset(st))
         // 目标标签是全局必中项，不属于预设：每轮都强制带上
         preset.targetTags = Array.isArray(st.config.targetTags) ? st.config.targetTags.slice(0, 50) : []
+        /* 新鲜度只听全局那个开关（跟严格度同一性质）：预设里写的 freshDays 不再单独生效 */
+        const gFresh = [0, 3650, 1825, 1095, 365].includes(Number(st.config.runFreshness)) ? Number(st.config.runFreshness) : 1825
+        if (preset.freshDays !== gFresh) {
+          preset.freshDays = gFresh
+          preset.freshGlobal = true
+        }
+        log(gFresh ? `新鲜度：只要近 ${Math.round(gFresh / 365)} 年内的作品（全局设定）` : '新鲜度：不限时间（全局设定）—— 但仍按时间梯度先看近作，近的够用就不往旧里翻，实在不够才一层层放宽')
         // 平稳航班：喜爱标签里明确带 R-18G，或库里的 R-18G 作品超过 100 件时，按评分动态夹带 R-18G
         if (preset.r18gProb) {
           try {
@@ -3647,6 +3725,7 @@ const routes = {
         const t0 = Date.now()
         const dryRun = Boolean(body?.dryRun)
         fastProg = { running: true, phase: 'start', target: Math.max(1, Math.min(16, Number(preset.cards) || 16)), scanned: 0, checked: 0, got: 0, updatedAt: Date.now() }
+        saveFastProg(true)
         const blTags = String((load().config.blacklistTags) || '').split(/[;；,，\n]/).map((x) => String(x || '').trim()).filter(Boolean)
         if (blTags.length) preset.blockTags = [...new Set([...(preset.blockTags || []), ...blTags])]
         let res
@@ -3655,13 +3734,15 @@ const routes = {
             home, pixiv, preset, skipIds: skip, log,
             libraryWorks,
             dryRun,
-            visionSelect: async (args) => (await loadVision()).scoreWorks(ctx, { home, ...args, log }),
+            visionSelect: async (args) => (await loadVision()).scoreWorks(ctx, { home, config: load().config || {}, ...args, log }),
             onProgress: (pg) => {
               fastProg = { ...pg, running: true, updatedAt: Date.now(), net: { route: (() => { try { return currentRoute() } catch { return '' } })(), tries: (() => { try { return routeReport() } catch { return [] } })() } }
+              saveFastProg()
             },
           })
         } catch (e) {
           fastProg = { ...(fastProg || {}), running: false, phase: 'error', error: String(e?.message ?? e).slice(0, 200), updatedAt: Date.now() }
+          saveFastProg(true)
           throw e
         }
         fastProg = {
@@ -3673,6 +3754,7 @@ const routes = {
           fetchCount: res?.fetchCount || 0, timings: res?.timings || null,
           ms: Date.now() - t0,
         }
+        saveFastProg(true)
         if (res?.round && res?.staged > 0) {
           try {
             const rd = loadRound(pixiv, res.round)
@@ -3808,6 +3890,7 @@ const routes = {
           tick(`样本 ${samples.length} 张（库内高分 ${pack.libraryCount} 张 + 最近卡片 ${pack.roundCount} 张）`)
           tick('发给视觉模型看画风（可能要 30–90 秒）')
           const style = await analyzeStyleProfile(ctx, {
+            config: st.config || {},
             home,
             works: samples,
             favoriteTags: [...new Set([...(Array.isArray(st.config.favoriteTags) ? st.config.favoriteTags : []), ...(Array.isArray(st.config.tasteTags) ? st.config.tasteTags : [])])].slice(0, 80),
@@ -3817,7 +3900,9 @@ const routes = {
             log,
           })
           if (!style.ok) throw new Error(style.error || '画风分析失败')
-          st.config.tasteStyle = style.style
+          const cleanStyle = sanitizeTasteStyle(style.style)
+          if (!cleanStyle) throw new Error('视觉模型给的结论不可用（疑似诊断句或样本为 0）。请到设置 → 视觉后端 点自检，确认有能看图的通路后重试。')
+          st.config.tasteStyle = cleanStyle
           st.config.tasteStyleAt = Date.now()
           save()
           tick('画风结论已保存')
@@ -3922,6 +4007,80 @@ const routes = {
         st.tagEdits[key] = rec
         save()
         return ok({ key, rm: rec.rm, add: rec.add })
+      },
+    },
+    /* 视觉通路自检：设置页「视觉后端」用来显示现在能走哪条（自定义 / 本机网关 / 宿主模型） */
+    '/vision/status': {
+      methods: ['GET'],
+      handler: async () => {
+        try {
+          const v = await loadVision()
+          return ok(await v.visionStatus(ctx, { config: load().config || {} }))
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
+    /* 视觉模型清单：设置页填了自定义端点后，按那个端点的 /v1/models 拉一份可选模型，免得让用户背模型名 */
+    '/vision/models': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        try {
+          const v = await loadVision()
+          const cfg = load().config || {}
+          return ok(await v.listVisionModels({
+            base: String(body?.base || '').trim() || cfg.visionBaseUrl || '',
+            key: String(body?.key || '').trim() || cfg.visionApiKey || '',
+            config: cfg,
+          }))
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
+    /* 一键安装本机网关插件 dsh-providers-hub：npm 装到当前 profile → 挂进 bundles → 提示重启。
+       装了它才有 8326 那条免注册的本地网关；不装也能用（自定义端点 / 宿主模型），只是少一条通路。 */
+    '/vision/hub/install': {
+      methods: ['POST'],
+      handler: async () => {
+        const steps = []
+        try {
+          const prof = String(process.env.DSH_PROFILE_DIR || '').trim()
+            || join(String(process.env.DSH_HOME || '').trim() || join(homedir(), '.dsh'), 'profiles', String(process.env.DSH_PROFILE || 'desktop').trim())
+          const pkgPath = join(prof, 'package.json')
+          if (!existsSync(pkgPath)) return bad(400, '找不到 profile 目录：' + prof)
+          const before = readFileSync(pkgPath, 'utf8')
+          const backup = pkgPath + '.bak-hub-' + Date.now()
+          try { writeFileSync(backup, before) } catch { /* 备份失败不拦着装 */ }
+          const npm = runNpmInstall(prof, ['dsh-providers-hub@latest'])
+          const tail = (npm.stdout + ' ' + npm.stderr).trim()
+          steps.push({ step: 'npm', status: npm.status, tail: tail.slice(-400) })
+          const hubPkg = join(prof, 'node_modules', 'dsh-providers-hub', 'package.json')
+          if (!existsSync(hubPkg)) {
+            const why = npm.error ? String(npm.error.message || npm.error) : (tail.slice(-200) || 'npm 没有任何输出')
+            return bad(400, '没装上：' + why, { steps, profile: prof })
+          }
+          let version = ''
+          try { version = JSON.parse(readFileSync(hubPkg, 'utf8')).version || '' } catch { /* ignore */ }
+          /* 挂进 profile 的 bundles，DSH 重启后才会真的加载它 */
+          try {
+            const j = JSON.parse(readFileSync(pkgPath, 'utf8'))
+            j.dsh = j.dsh || {}
+            j.dsh.profile = j.dsh.profile || {}
+            const list = Array.isArray(j.dsh.profile.bundles) ? j.dsh.profile.bundles : []
+            const added = !list.includes('dsh-providers-hub')
+            if (added) list.push('dsh-providers-hub')
+            j.dsh.profile.bundles = list
+            writeFileSync(pkgPath, JSON.stringify(j, null, 2) + '\n')
+            steps.push({ step: 'bundles', added })
+          } catch (e) {
+            steps.push({ step: 'bundles', error: String(e?.message ?? e).slice(0, 200) })
+          }
+          log('视觉后端：已装 dsh-providers-hub ' + version + '（重启 DSH 后生效）')
+          return ok({ installed: true, version, profile: prof, backup, needsRestart: true, steps })
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 300), { steps })
+        }
       },
     },
     '/tag/stats': {
@@ -4177,6 +4336,20 @@ const routes = {
     save()
     log(`严格度：${lvl}`)
     return ok({ level: lvl, active: st.config.runPresetActive, preset: activePreset(st) })
+  },
+},
+
+/** 主界面快速切换新鲜度：写全局默认（预设里的 freshDays 从此不生效） */
+'/preset/freshness': {
+  methods: ['POST'],
+  handler: async (q, body) => {
+    const fd = Number(body?.days)
+    const days = [0, 3650, 1825, 1095, 365].includes(fd) ? fd : 1825
+    const st = load()
+    st.config.runFreshness = days
+    save()
+    log(days ? `新鲜度：近 ${Math.round(days / 365)} 年` : '新鲜度：不限时间')
+    return ok({ days, active: st.config.runPresetActive })
   },
 },
 
@@ -4607,7 +4780,11 @@ const routes = {
     /** 快跑实时进度（轮询用） */
     '/fast/progress': {
       methods: ['GET'],
-      handler: () => ok(fastProg || { running: false }),
+      handler: () => {
+        if (fastProg) return ok(fastProg)
+        const saved = readFastProg()
+        return ok(saved ? { ...saved, restored: true } : { running: false })
+      },
     },
 
     /** 跑完一轮后的体验诊断：本机网速 / VPN 实际延迟 / pixiv 是否在限流这个出口 */

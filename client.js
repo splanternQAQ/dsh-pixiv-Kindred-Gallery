@@ -2187,6 +2187,11 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-box="group"]{border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:2px 16px 14px;margin:0 0 16px;background:rgba(255,255,255,.028);}
 [data-pg-field-label]{font-size:11px;color:var(--dsw-alias-label-secondary,#aeb4bd);}
 [data-pg-note2]{font-size:10px;color:var(--dsw-alias-label-tertiary,#8b919a);line-height:1.5;}
+[data-pg-theme="dark"] [data-pg-note2]{font-size:13px;line-height:1.9;color:#e9eef9;letter-spacing:.2px;}
+/* 「视觉后端」这一页说明字多：字号抬到正文级、颜色提到接近白，行距放松，别挤成一团 */
+[data-pg-modal][data-pg-seckey="vision"] [data-pg-note2]{font-size:13px;line-height:1.95;color:#e9eef9;letter-spacing:.2px;}
+[data-pg-modal][data-pg-seckey="vision"][data-pg-theme="light"] [data-pg-note2]{color:#39434f;}
+[data-pg-modal][data-pg-seckey="vision"] [data-pg-note2] + [data-pg-note2]{margin-top:10px;}
 [data-pg-row2],[data-pg-row3],[data-pg-row]{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 12px;}
 [data-pg-stops]{display:flex;flex-direction:column;gap:6px;margin:4px 0 8px;}
 [data-pg-stop]{display:flex;align-items:center;gap:8px;}
@@ -6315,7 +6320,7 @@ function TagLab({ say }) {
     h('div', { 'data-pg-note2': '' }, '斜杠前是作品库里有这个标签的作品数，斜杠后是标签总均分。天蓝底＝手动加入的喜爱标签，粉底＝自动加入的喜爱标签，灰底＝来自导入预设的喜爱标签，金边★＝目标标签；左键切换喜爱，右键切换目标。'),
     h('input', { 'data-pg-input': '', placeholder: '搜索标签…', value: tq, onChange: (e) => setTq(e.target.value), style: { marginTop: '6px' } }),
     h(TagTileWall, { stats, targets, favs, autos, manuals, q: tq, onTarget: toggleTarget, onFav: toggleFav }),
-    (!stats || !stats.length) ? h('div', { 'data-pg-note2': '', style: { marginTop: '10px', color: '#94a3b8' } }, '暂无相关数据 · 跑一轮、给作品打分之后，这里会出现标签统计') : null,
+    (!stats || !stats.length) ? h('div', { 'data-pg-note2': '', style: { marginTop: '10px' } }, '暂无相关数据 · 跑一轮、给作品打分之后，这里会出现标签统计') : null,
     h('div', { 'data-pg-section2': '', style: { marginTop: '18px' } }, '最近几张作品的标签'),
     h('div', { 'data-pg-note2': '' }, '权重 = 出现次数 × 总均分。天蓝底＝手动加入的喜爱标签，粉底＝自动加入的喜爱标签，灰底＝来自导入预设的喜爱标签。非喜爱标签只要「评分次数 ≥ 潜在次数」且「总均分 ≥ 潜在均分」，就会排到最前并加金边——鼠标悬停会提示：你可能喜欢这个标签，左键即可将其加入到喜爱的标签，右键设置其为目标标签。这两个阈值就在下面调；自动加入会按「最近 N 件不同作品」去重，改分不再重复计数。'),
     h('div', { 'data-pg-inline': '', style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '0 0 8px' } },
@@ -6644,7 +6649,7 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
         style: { borderColor: color, background: 'linear-gradient(180deg,' + color + '26,' + color + '0f)' },
         onClick: () => setPanel(panel === key ? '' : key),
       }, h('span', { 'data-pg-secdot': '', style: { background: color } }), title)
-      const secModal = (key, title, color, ...kids) => (panel === key ? h('div', { 'data-pg-modal': '', 'data-pg-secmodal': '', onClick: () => setPanel('') },
+      const secModal = (key, title, color, ...kids) => (panel === key ? h('div', { 'data-pg-modal': '', 'data-pg-secmodal': '', 'data-pg-seckey': key, onClick: () => setPanel('') },
         h('div', { 'data-pg-sheet': '', style: { maxWidth: '980px', width: 'min(94vw, 980px)', maxHeight: '86vh', overflow: 'auto', borderTop: '3px solid ' + color }, onClick: (e) => e.stopPropagation() },
           h('div', { 'data-pg-sheethead': '', style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px', borderBottom: '1px solid rgba(148,163,184,.22)' } },
             h('div', { style: { flex: 1, fontSize: '16px', fontWeight: 900, color } }, title),
@@ -6832,6 +6837,40 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
   const [lowDelay, setLowDelay] = React.useState(0)
   const [lowInstant, setLowInstant] = React.useState(true)
   const [blacklistText, setBlacklistText] = React.useState('')
+  const [visionBaseUrl, setVisionBaseUrl] = React.useState('')
+  const [visionApiKey, setVisionApiKey] = React.useState('')
+  const [visionModel, setVisionModel] = React.useState('')
+  const [visionProbe, setVisionProbe] = React.useState('')
+  const [visionHubNote, setVisionHubNote] = React.useState('')
+  const [visionHub, setVisionHub] = React.useState(null)
+  const [visionInstalling, setVisionInstalling] = React.useState(false)
+  /* 检测本机网关：按钮和「打开面板就自动跑一次」共用这一份逻辑。
+     说明口径固定一句：三渠道都不可用时，最后兜底的是 DSH 宿主自带的 DeepSeek 视觉模型。 */
+  const checkVisionHub = React.useCallback(async () => {
+    setVisionHubNote('正在检测…')
+    try {
+      const r = await api('/vision/status')
+      const hub = (r && r.hub) || {}
+      setVisionHub(hub)
+      const gw = (r && r.gateway) || {}
+      const chans = Array.isArray(r && r.channels) ? r.channels : []
+      const parts = []
+      parts.push(hub.installed ? ('已安装 dsh-providers-hub' + (hub.version ? ' ' + hub.version : '')) : '没检测到 dsh-providers-hub（可以不装）')
+      parts.push(gw.ok ? ('8326 通，能列出 ' + (gw.models || 0) + ' 个模型') : ('8326 不通' + (gw.error ? '（' + gw.error + '）' : '')))
+      if (!hub.installed) parts.push('想省事就点下面的一键安装；不想装，填一家端点和密钥也一样能用')
+      else if (!gw.ok) parts.push('装了但网关没起来：重启一次 DSH，或到那个插件里登录一下账号')
+      if (chans.length) parts.push('现在会走 ' + chans[0].kind + '：' + (chans[0].model || '自动') + '；三条都不通时落到宿主的 DeepSeek 视觉模型')
+      else parts.push('没有可用渠道：填一家端点，或确认 DSH 里能看到 DeepSeek 模型')
+      setVisionHubNote(parts.join('；'))
+    } catch (e) { setVisionHubNote('检测失败：' + String(e?.message ?? e)) }
+  }, [])
+  /* 面板一打开就自己探一次：新用户不该先学会「点检测」才知道自己缺什么 */
+  React.useEffect(() => {
+    if (panel !== 'vision') return
+    checkVisionHub()
+  }, [panel, checkVisionHub])
+  const [visionEffort, setVisionEffort] = React.useState('normal')
+  const [visionModels, setVisionModels] = React.useState([])
   const [tagStats, setTagStats] = React.useState([])
   const [tagTargets, setTagTargets] = React.useState([])
   const [tagFavs, setTagFavs] = React.useState([])
@@ -6983,6 +7022,10 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
         setLowDelay(0)
         setLowInstant(true)
         setBlacklistText(String(c.blacklistTags || ''))
+        setVisionBaseUrl(String(c.visionBaseUrl || ''))
+        setVisionApiKey(String(c.visionApiKey || ''))
+        setVisionModel(String(c.visionModel || ''))
+        setVisionEffort(['fast', 'normal', 'deep'].includes(String(c.visionEffort || '')) ? String(c.visionEffort) : 'normal')
           setAutoMinScore(Number(c.autoDownloadMinScore ?? 9))
           setRoundScoring({ enabled: true })
           setPerfectRule({
@@ -7043,6 +7086,10 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
         authorRules,
         autoDownload,
         blacklistTags: blacklistText,
+        visionBaseUrl,
+        visionApiKey,
+        visionModel,
+        visionEffort,
         lowScoreTrash: { on: true, threshold: Number(lowThreshold) || 5, delayMin: 0, instant: true },
         autoDownloadMinScore: Math.max(0, Math.min(10, Number(autoDownloadMinScore) || 0)),
         roundScoring,
@@ -7103,7 +7150,8 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
         maxImageMB, maxCacheWorks, archiveFormat, followedOnly, mustPush, minPush, dislike,
         runCards, runImages, runKeywords, runBlacklist, prefAuto, scoreStops, scoreLabels, labelColors,
         authorRules, autoDownload, autoDownloadMinScore, roundScoring, perfectRule, autoSocial, accMode, accInterval,
-        presets, activePreset, lastPresetSwitch, showInSidebar, collapseToMore, projectUrl, kbKeys, blacklistText, uiTheme])
+        presets, activePreset, lastPresetSwitch, showInSidebar, collapseToMore, projectUrl, kbKeys, blacklistText, uiTheme,
+        visionBaseUrl, visionApiKey, visionModel, visionEffort])
       const save = async () => {
         setBusy('save')
         try {
@@ -7396,6 +7444,19 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
       const field = (label, node, hint, bad) => h('label', { 'data-pg-field': '', 'data-bad': bad ? '' : undefined },
         h('span', { 'data-pg-field-label': '' }, label), node,
         hint ? h('span', { 'data-pg-note2': '', style: bad ? { color: '#f87171', fontWeight: 800 } : undefined }, hint) : null)
+      // 复制到剪贴板：navigator.clipboard 在非安全上下文会被禁，退到 execCommand
+      const copyText = async (text) => {
+        const v = String(text || '')
+        if (!v) return false
+        try { await navigator.clipboard.writeText(v); return true } catch { /* 退到下一招 */ }
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = v; ta.style.position = 'fixed'; ta.style.opacity = '0'
+          document.body.appendChild(ta); ta.select()
+          const done = document.execCommand('copy')
+          ta.remove(); return Boolean(done)
+        } catch { return false }
+      }
       const pickJson = (onText) => {
         const el = document.createElement('input')
         el.type = 'file'; el.accept = '.json,application/json'
@@ -8066,7 +8127,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
         h('div', { 'data-pg-group': '' }, '个人偏好设置'),
         h('div', { 'data-pg-box': 'group' },
           h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '用户的口味画像分析'),
-          h('div', { 'data-pg-note2': '', style: { fontSize: '13px', lineHeight: '1.9', color: 'var(--dsw-alias-label-secondary,#b6c0cc)', maxWidth: '1080px', margin: '6px 0 10px' } }, '实时分析当前用户的喜好。每完成 3 个卡片就重新计算一次推荐度。画像样本以作品库里的 9/10 分作品为主（约 12 张），再补高分作者的代表作和最近几轮的高分卡片；评分和入库作品越多，结论越准。低分标签会被明显压低，反复打 3 分以下的标签不会「照样推荐」。算法需要不断优化，请尽情提供意见。'),
+          h('div', { 'data-pg-note2': '', style: { fontSize: '13px', lineHeight: '1.9', color: '#e9eef9', maxWidth: '1080px', margin: '6px 0 10px' } }, '实时分析当前用户的喜好。每完成 3 个卡片就重新计算一次推荐度。画像样本以作品库里的 9/10 分作品为主（约 12 张），再补高分作者的代表作和最近几轮的高分卡片；评分和入库作品越多，结论越准。低分标签会被明显压低，反复打 3 分以下的标签不会「照样推荐」。算法需要不断优化，请尽情提供意见。'),
           h(TastePanel, { say }),
           prefBox,
   
@@ -8079,7 +8140,132 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
           secBtn('aftercare', '作品后续管理', '#ff9f1c'),
           secBtn('account', '账号读取与流量', '#a3e635'),
           secBtn('personalize', '个性化', '#e879f9'),
-          secBtn('singlehand', '单手操作设置', '#fda4af')),
+          secBtn('singlehand', '单手操作设置', '#fda4af'),
+          secBtn('vision', '视觉后端（看图用）', '#38bdf8')),
+        secModal('vision', '视觉后端（看图用）', '#38bdf8',
+          h('div', { 'data-pg-box': 'group' },
+            h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '这条通路是给谁用的'),
+            h('div', { 'data-pg-note2': '' }, '「精挑」看图和「画风与口味结论」都走它：自定义端点 → 本机网关（127.0.0.1:8326）→ 宿主模型；前一条不通就自动退到下一条。最后兜底的是 DSH 宿主自带的 DeepSeek 视觉模型——所以默认情况下用的就是 DeepSeek，不需要任何密钥，也不会因为某个端口没开就整块罢工。'),
+            h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '本机网关（可装可不装）'),
+            h('div', { 'data-pg-note2': '' }, '装了 dsh-providers-hub 就多一条免注册、免密钥的通路（网关里首选也是 deepseek-official/deepseek-flash）；没装也能用，只是少了这一条。三格留空＝自动。'),
+            h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '6px 0 2px' } },
+              h('button', {
+                'data-pg-btn': '', type: 'button',
+                onClick: () => checkVisionHub(),
+              }, '重新检测'),
+              visionHubNote ? h('span', { 'data-pg-note': '' }, visionHubNote) : null),
+            h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '6px 0 2px' } },
+              h('button', {
+                'data-pg-btn': '', type: 'button',
+                disabled: visionInstalling || !!(visionHub && visionHub.installed),
+                style: { opacity: (visionInstalling || (visionHub && visionHub.installed)) ? 0.55 : 1 },
+                onClick: async () => {
+                  setVisionInstalling(true)
+                  setVisionHubNote('正在安装 dsh-providers-hub…（要下载一会儿，别关这个页面）')
+                  try {
+                    const r = await api('/vision/hub/install', {})
+                    setVisionHub(r || null)
+                    setVisionHubNote(r && r.installed
+                      ? ('装好了' + (r.version ? ' ' + r.version : '') + '，重启 DSH 后生效；重启完回来点「检测本机网关」确认')
+                      : '没装上，展开下面的下载记录看看')
+                  } catch (e) { setVisionHubNote('安装失败：' + String(e?.message ?? e)) } finally { setVisionInstalling(false) }
+                },
+              }, visionInstalling ? '正在安装…' : ((visionHub && visionHub.installed) ? '已安装 dsh-providers-hub' : '一键安装 dsh-providers-hub')),
+              h('a', {
+                href: 'https://www.npmjs.com/package/dsh-providers-hub', target: '_blank', rel: 'noreferrer',
+                'data-pg-note': '', style: { textDecoration: 'underline' },
+              }, '看它是什么（npm 页面）')),
+            h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '自定义端点（留空＝自动）'),
+            field('端点', h('input', {
+              'data-pg-input': '', placeholder: '例如 https://api.siliconflow.cn/v1（留空＝自动）',
+              value: visionBaseUrl, onChange: (e) => setVisionBaseUrl(e.target.value), style: { width: '100%' },
+            }), 'OpenAI 兼容地址。没写版本号会自动补 /v1；已经带 /v4 这类版本号的不会重复补'),
+            field('密钥', h('input', {
+              'data-pg-input': '', type: 'password', placeholder: 'sk-…（留空＝用本机网关的 api-key）',
+              value: visionApiKey, onChange: (e) => setVisionApiKey(e.target.value), style: { width: '100%' },
+            }), '只存在本机的 gallery.json 里，不会上传'),
+            field('模型', h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
+              h('input', {
+                'data-pg-input': '', placeholder: '先点「拉取模型列表」，再从下拉里选；也可以手填',
+                value: visionModel, onChange: (e) => setVisionModel(e.target.value), style: { flex: '1 1 240px', minWidth: 0 },
+              }),
+              h('button', {
+                'data-pg-btn': '', type: 'button',
+                onClick: async () => {
+                  setVisionProbe('正在向端点要模型清单…')
+                  setVisionModels([])
+                  try {
+                    const r = await api('/vision/models', { base: visionBaseUrl, key: visionApiKey })
+                    const list = (r && r.models) || []
+                    if (!list.length) { setVisionProbe('没拿到清单：' + String((r && r.error) || '端点没返回模型')); return }
+                    setVisionModels(list)
+                    setVisionProbe('拿到 ' + list.length + ' 个模型，从下拉里选一个（挑能看图的）')
+                  } catch (e) { setVisionProbe('拉取失败：' + String(e?.message ?? e)) }
+                },
+              }, '拉取模型列表'),
+              visionModels.length ? h('select', {
+                'data-pg-input': '', value: visionModel,
+                onChange: (e) => { setVisionModel(e.target.value); setVisionProbe('已选「' + e.target.value + '」，点下面自检确认它能看图') },
+                style: { flex: '1 1 240px', minWidth: 0 },
+              }, [h('option', { value: '', key: '__auto' }, '（自动挑）')].concat(visionModels.map((m) => h('option', { value: m, key: m }, m)))) : null),
+              '能看图的模型才行。清单是按你填的端点现拉的，服务商哪天换了模型名，重拉一次就够；留空＝自动挑（优先 deepseek flash，其次名字带 vl / vision 的）'),
+            field('强度', h('select', {
+              'data-pg-input': '', value: visionEffort, onChange: (e) => setVisionEffort(e.target.value), style: { width: '100%' },
+            }, [
+              h('option', { value: 'fast', key: 'fast' }, '快速（省额度，预算 ×0.6）'),
+              h('option', { value: 'normal', key: 'normal' }, '标准（默认，×1）'),
+              h('option', { value: 'deep', key: 'deep' }, '仔细（×1.7，长结论更完整，也更费额度）'),
+            ]), '只调每次调用给模型的 token 预算，不改打分尺度：精挑要的是短短一句判断，标准就够；画风结论要长文字时才用仔细'),
+            h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '现成的几组地址（点一下：填进端点，并把地址复制走）'),
+            h('div', { 'data-pg-note2': '' }, '这里只替你填地址、不替你填模型名——那家的模型清单请点上面的「拉取模型列表」，那才是它现在真有的。密钥要自己去对应站点注册后拿；点按钮不会替你付钱，也不会存任何账号。'),
+            h('div', { style: { margin: '4px 0 10px' } },
+              [
+                ['本机网关（默认）', '', '不用注册：装了 dsh-providers-hub 就有'],
+                ['OpenAI', 'https://api.openai.com/v1', 'platform.openai.com 拿密钥'],
+                ['硅基流动', 'https://api.siliconflow.cn/v1', 'siliconflow.cn 拿密钥，国内直连'],
+                ['智谱 GLM', 'https://open.bigmodel.cn/api/paas/v4', 'bigmodel.cn 拿密钥，glm-4v 有免费额度'],
+                ['阿里百炼', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'bailian.console.aliyun.com 拿密钥'],
+                ['火山方舟', 'https://ark.cn-beijing.volces.com/api/v3', 'console.volcengine.com/ark 拿密钥'],
+                ['OpenRouter', 'https://openrouter.ai/api/v1', 'openrouter.ai 一个 key 走多家模型'],
+                ['月之暗面', 'https://api.moonshot.cn/v1', 'platform.moonshot.cn 拿密钥'],
+                ['清空（回到自动）', '', '把三格清空，重新走自动探测'],
+              ].map(([label, base, tip]) => h('div', { key: label, style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', margin: '0 0 6px' } },
+                h('button', {
+                  'data-pg-btn': '', type: 'button', title: tip,
+                  onClick: async () => {
+                    setVisionBaseUrl(base)
+                    setVisionApiKey('')
+                    setVisionModels([])
+                    const copied = base ? await copyText(base) : false
+                    setVisionProbe(base
+                      ? '已填入端点' + (copied ? '，地址也复制到剪贴板了' : '（没复制成功，请手动选中地址）') + '：' + base
+                      : '已清空，回到自动探测')
+                  },
+                }, label),
+                h('span', { 'data-pg-note2': '', style: { wordBreak: 'break-all' } }, base || '（留空＝自动探测 127.0.0.1:8326）'),
+                h('span', { 'data-pg-note2': '' }, tip))),
+            ),
+            h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '自检与排错'),
+            h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', margin: '2px 0 6px' } },
+              h('button', {
+                'data-pg-btn': '', type: 'button',
+                onClick: async () => {
+                  setVisionProbe('正在探测…')
+                  try {
+                    const r = await api('/vision/status')
+                    const parts = []
+                    if (r && r.gateway) parts.push('本机网关' + (r.gateway.ok ? '通（' + r.gateway.models + ' 个模型）' : '不通' + (r.gateway.error ? '：' + r.gateway.error : '')))
+                    if (r && r.custom) parts.push('自定义 ' + (r.custom.model || '未指定模型'))
+                    if (r && r.host) parts.push('宿主 ' + r.host)
+                    const chain = ((r && r.channels) || []).map((c) => c.kind + (c.model ? ':' + c.model : '')).join(' → ')
+                    setVisionProbe([...parts, chain ? '顺序 ' + chain : ''].filter(Boolean).join(' · ') || '没有可用通路')
+                  } catch (e) { setVisionProbe('自检失败：' + String(e?.message ?? e)) }
+                },
+              }, '自检视觉通路'),
+              visionProbe ? h('span', { 'data-pg-note2': '' }, visionProbe) : null),
+            h('div', { 'data-pg-note2': '' }, '自检只探测、不花额度；真正看图时才调用模型。如果网关显示不通、自定义那格也没填，画廊会退到宿主模型——结论会照常出，只是可能慢一点。'),
+            h('div', { 'data-pg-note2': '', style: { marginTop: '6px' } }, '端口说明：8326 是 dsh-providers-hub 的默认端口，可以用环境变量 DSH_OPENAI_GATEWAY_PORT 改；改了端口不用改这里——它会读 DSH_OPENAI_GATEWAY_URL / HOST / PORT 再自动找。'),
+            )),
         secModal('prefpreset', '个人偏好预设', '#a78bfa',
           h('div', { 'data-pg-box': 'prefpreset', style: { marginTop: '6px' } },
           h('div', { 'data-pg-note2': '' }, '现在会把实时标签权重、用户的口味画像与样本一起写进预设，不只是喜爱标签和均分。导入/应用预设时会合并标签，画像作为参考保留；黑名单不在预设里。'),
@@ -8096,7 +8282,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             h('div', { style: { flex: 1, minWidth: 0 } },
               h('div', { 'data-pg-presetname': '' }, p.name, activePreset === p.id ? h('span', { 'data-pg-presetactive': '' }, '当前') : null),
               h('div', { 'data-pg-note2': '' }, presetInfoLine(p)),
-              h('div', { 'data-pg-note2': '', style: { color: '#94a3b8', fontSize: '12px', marginTop: '2px' } }, presetSuitable(p))),
+              h('div', { 'data-pg-note2': '', style: { marginTop: '2px' } }, presetSuitable(p))),
             activePreset === p.id ? null : h('button', { 'data-pg-btn': '', title: '把这个预设合并进你现在的偏好数据（不会丢弃已有标签）', onClick: () => applyPreset(p, 'merge') }, '应用此预设（将会合并数据）'),
             activePreset === p.id ? null : h('button', { 'data-pg-btn': '', 'data-danger': '', title: '用这个预设覆盖你现在的偏好数据（会先弹确认）', onClick: async () => { const ok = await askConfirm('此操作会导致你当前的预设数据被覆盖而非合并，你确定要继续吗？'); if (ok) applyPreset(p, 'replace') } }, '仅用此预设'),
             h('button', { 'data-pg-btn': '', title: '给这个预设改名', onClick: () => renamePreset(p) }, '改名'),
@@ -8823,6 +9009,17 @@ function GalleryTab2({ onScopeChanged }) {
         return () => clearInterval(t)
       }, [busy])
   const [strictLevel, setStrictLevel] = React.useState('balance')
+      /* 全局新鲜度（天）：0 = 不限；与严格度同级，预设里写的 freshDays 从此不再单独生效 */
+      const [freshDays, setFreshDays] = React.useState(1825)
+      const [freshAsk, setFreshAsk] = React.useState(false)
+      const pickFresh = async (days) => {
+        const d = [0, 3650, 1825, 1095, 365].includes(Number(days)) ? Number(days) : 1825
+        setFreshDays(d)
+        try {
+          await api('/preset/freshness', { days: d })
+          say(d ? '新鲜度：近 ' + Math.round(d / 365) + ' 年' : '新鲜度：不限时间（很久远的作品也会进来）', 'good')
+        } catch (err) { say(String(err?.message ?? err), 'warn') }
+      }
   const [libFocusId, setLibFocusId] = React.useState(null)
   const sumShow = multiSummary || oneSummary
   const inDetailRef = React.useRef(false)
@@ -9077,9 +9274,38 @@ function GalleryTab2({ onScopeChanged }) {
         const saved = readRunProg()
         if (!saved) return
         if (saved.engine === 'fast') {
+          /* 快跑：切窗口回来 / 面板重挂之后接着问后端 —— 要么继续显示，要么显示失败，要么报「已经跑完」，
+             不能再像以前那样贴回来 3 分钟就自己消失。 */
+          let stop = false
+          const seenRunning = Boolean(saved.running)
           setRunProg(saved)
-          const t0 = setTimeout(() => setRunProg(null), 3 * 60 * 1000)
-          return () => clearTimeout(t0)
+          const tick = async () => {
+            if (stop) return
+            try {
+              const s = await api('/fast/progress')
+              if (s && s.running) { setRunProg({ ...s, engine: 'fast' }); return }
+              stop = true
+              if (s && s.phase === 'error') {
+                setRunProg({ ...s, engine: 'fast', running: false })
+                say('这一轮没跑完：' + String(s.error || '被中断了').slice(0, 100), 'warn')
+                setTimeout(() => setRunProg(null), 60 * 1000)
+                return
+              }
+              if (s && (s.phase === 'done' || Number(s.staged) > 0)) {
+                setRunProg({ ...s, engine: 'fast', running: false, phase: 'done' })
+                say('这一轮已经跑完了' + (Number(s.staged) ? '，收了 ' + s.staged + ' 张' : ''), 'good')
+                setTimeout(() => setRunProg(null), 30 * 1000)
+                return
+              }
+              /* 后端没有这一轮的记录：说明进程重起过，这一轮其实断了 */
+              setRunProg({ ...saved, running: false, phase: 'error', error: seenRunning ? '这一轮跑到一半就断了（DSH 重启过），没有结果' : '这一轮已经结束了' })
+              say(seenRunning ? '上一轮被打断了，没有结果' : '上一轮已经结束了', 'warn')
+              setTimeout(() => setRunProg(null), 45 * 1000)
+            } catch { /* 下一跳再试 */ }
+          }
+          tick()
+          const t = setInterval(tick, 2500)
+          return () => { stop = true; clearInterval(t) }
         }
         let stop = false
         const tick = async () => {
@@ -9624,6 +9850,7 @@ function GalleryTab2({ onScopeChanged }) {
               if (alive.current) setTagMap(m)
             } catch { /* ignore */ }
     setStrictLevel(['strict', 'balance', 'quantity'].includes(String(r?.config?.runStrictness)) ? String(r.config.runStrictness) : 'balance')
+            setFreshDays([0, 3650, 1825, 1095, 365].includes(Number(r?.config?.runFreshness)) ? Number(r.config.runFreshness) : 1825)
             try {
               const pr = await api('/presets')
               if (alive.current) { setPresetList(pr?.presets || []); setPresetName(pr?.active?.name || '') }
@@ -10059,6 +10286,15 @@ function GalleryTab2({ onScopeChanged }) {
               } catch (err) { say(String(err?.message ?? err), 'warn') }
             },
           }),
+          h(PillSelect, {
+            label: '新鲜度',
+            value: String(freshDays),
+            options: [{ value: '0', label: '不限时间' }, { value: '3650', label: '近 10 年' }, { value: '1825', label: '近 5 年' }, { value: '1095', label: '近 3 年' }, { value: '365', label: '近一年' }],
+            title: '新鲜度：只看这段时间内的作品（全局设定，预设里写的时限不再生效）。默认近 5 年',
+            wrapAttrs: { 'data-pg-freshpill': '' },
+            menuWidth: 150,
+            onPick: (v) => { const d = Number(v) || 0; if (!d) { setFreshAsk(true); return } pickFresh(d) },
+          }),
           h('div', { 'data-pg-tabs': '' },
             h('button', { 'data-pg-tab': '', 'data-on': view === 'rounds' ? '' : undefined, onClick: () => setView('rounds') }, '已收集到的作品'),
             h('button', { 'data-pg-tab': '', 'data-on': view === 'library' ? '' : undefined, onClick: () => setView('library') }, '作品库')),
@@ -10078,7 +10314,9 @@ function GalleryTab2({ onScopeChanged }) {
               runProg.batch ? `第 ${runProg.batch.i}/${runProg.batch.n} 轮 · ` : '',
               runProg.phase === 'done'
                 ? `这一轮结束：收了 ${runProg.staged} / ${runProg.target} 件${runProg.thumbs ? '，缩略图已就绪' : ''}`
-                : runProg.stage === 'vision'
+                : runProg.phase === 'error'
+                  ? `这一轮没跑完：${String(runProg.error || '进程被中断了').slice(0, 80)}`
+                  : runProg.stage === 'vision'
                   ? `质检把关中：${runProg.visionPicked || 0} / ${runProg.visionWant || 8} 件（已收 ${runProg.staged || 0} 件）`
                   : runProg.stage === 'picked'
                     ? '已看够，正在排序收尾…'
@@ -10643,6 +10881,16 @@ function GalleryTab2({ onScopeChanged }) {
               }, '一键安装') : null,
               advice.kind === 'dep' ? h('button', { 'data-pg-btn': '', type: 'button', onClick: () => { try { window.open((advice.dep && advice.dep.repo) || 'https://github.com/splanternQAQ/dafayu-pixiv-duty', '_blank') } catch (e) { /* ignore */ } } }, '打开仓库') : null,
               h('button', { 'data-pg-btn': '', onClick: () => setAdvice(null) }, '知道了')))) : null,
+        freshAsk ? h('div', { 'data-pg-modal': '', 'data-pg-gate': '', onClick: () => setFreshAsk(false) },
+          h('div', { 'data-pg-sheet': '', 'data-pg-gatesheet': '', onClick: (e) => e.stopPropagation() },
+            h('div', { 'data-pg-gatetitle': '', 'data-tone': 'warn' }, '不限时间：可能会刷到很久远的作品'),
+            h('div', { 'data-pg-gatenote': '' },
+              '关掉时间限制以后，搜索会一路往回捞 —— 十年前、甚至更早的作品都可能被推进来。',
+              h('br'), h('br'),
+              '那些作品的画质、完成度和您现在喜欢的画风未必对得上，也很可能已经被人反复收藏过、口味偏旧。要不要就这么开？'),
+            h('div', { 'data-pg-gateact': '' },
+              h('button', { 'data-pg-btn': '', onClick: () => setFreshAsk(false) }, '算了，保持时间限制'),
+              h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { setFreshAsk(false); pickFresh(0) } }, '知道，不限时间')))) : null,
         (gateOpen && gateOpen.need && gateOpen.need.length) ? h('div', { 'data-pg-modal': '', 'data-pg-gate': '', onClick: () => { gateResume.current = null; setGateOpen(null) } },
           h('div', { 'data-pg-sheet': '', 'data-pg-gatesheet': '', onClick: (e) => e.stopPropagation() },
             h('div', { 'data-pg-gatetitle': '', 'data-tone': 'warn' },
