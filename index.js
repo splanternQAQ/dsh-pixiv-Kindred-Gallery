@@ -184,7 +184,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.2.8'
+const GALLERY_VERSION = '1.2.9'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 
 function bad(status, error, extra = {}) {
@@ -4487,6 +4487,16 @@ const routes = {
       handler: async () => {
         const f = join(PLUGIN_DIR, 'assets', 'qq-group.jpg')
         if (!existsSync(f)) return bad(404, '没有找到群二维码图片')
+        return sendFile(f)
+      },
+    },
+
+    /** 更新提示弹窗的暗色底图（随插件分发，不联网；1200×800，3:2） */
+    '/update-bg': {
+      methods: ['GET'],
+      handler: async () => {
+        const f = join(PLUGIN_DIR, 'assets', 'update-bg.jpg')
+        if (!existsSync(f)) return bad(404, '没有找到更新弹窗底图')
         return sendFile(f)
       },
     },

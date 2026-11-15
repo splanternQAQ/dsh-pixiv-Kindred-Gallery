@@ -135,6 +135,14 @@ window.__ModuleLoader__.load({
         } finally { setInstalling(false) }
       }
       const notes = Array.isArray(info?.notes) ? info.notes : []
+      /* 主界面点了「是，立即更新」进来时，直接开跑，不用再点一次安装 */
+      const autoRef = React.useRef(false)
+      React.useEffect(() => {
+        if (autoRef.current) return
+        if (!data?.autoInstall || done || installing || !info?.update) return
+        autoRef.current = true
+        install()
+      }, [data?.autoInstall, installing, done, info?.update])
       const notesTitle = info?.noteSource === 'README' ? '这一版改了什么（README 更新日志）'
         : info?.noteSource === 'commit' ? '最新提交说明' : '更新内容'
       return h('div', { 'data-pg-modal': '', style: { zIndex: 420 }, onClick: onClose },
@@ -190,6 +198,35 @@ window.__ModuleLoader__.load({
           h('div', { 'data-pg-note2': '', style: { color: '#f87171', marginTop: '10px', whiteSpace: 'pre-wrap' } }, `检查失败：${data.error}`),
           h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '14px' } },
             h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose }, '关闭'))) : null))
+    }
+
+    /* 进入主界面时的更新提醒：一天只弹一次，有新版本才弹。
+       「是」→ 直接开始安装（走设置页那张更新卡）；「否」→ 跳到设置页的「检查更新」并高亮一下。 */
+    function UpdatePrompt({ info, onYes, onNo, onClose }) {
+      const cur = info?.version || ''
+      const latest = info?.latest || ''
+      return h('div', { 'data-pg-modal': '', 'data-pg-updprompt': '', style: { zIndex: 430 }, onClick: onClose },
+        h('div', {
+          'data-pg-updcard': '',
+          style: { backgroundImage: `url(${BASE}/update-bg)` },
+          onClick: (e) => e.stopPropagation(),
+        },
+        h('div', { 'data-pg-updscrim': '' }),
+        h('a', {
+          'data-pg-updartist': '',
+          href: 'https://www.pixiv.net/artworks/128452385',
+          target: '_blank', rel: 'noreferrer',
+          title: '画师：セトマン（pixiv 作品「イブキちゃんとココナちゃん！」）',
+          onClick: (e) => e.stopPropagation(),
+        }, '画师名称：セトマン'),
+        h('div', { 'data-pg-updbody': '' },
+          h('div', { 'data-pg-updkicker': '' }, '发现有新版本'),
+          h('div', { 'data-pg-updver': '' }, latest || '新版本'),
+          h('div', { 'data-pg-updsub': '' }, cur ? `当前 ${cur}　→　最新 ${latest}` : `最新 ${latest}`),
+          h('div', { 'data-pg-updnote': '' }, '要现在更新吗？装完要重启 DSH 才生效。这个提醒一天只弹一次。'),
+          h('div', { 'data-pg-updact': '' },
+            h('button', { 'data-pg-btn': '', type: 'button', onClick: onNo }, '否，我先看看更新了什么'),
+            h('button', { 'data-pg-btn': '', 'data-primary': '', type: 'button', onClick: onYes }, '是，立即更新')))))
     }
 
     /* 缩略图右键菜单：只做「复制当前作品到剪贴板」，blob 在右键时就开始取，点下去立刻写剪贴板 */
@@ -2192,6 +2229,20 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-modal][data-pg-seckey="vision"] [data-pg-note2]{font-size:13px;line-height:1.95;color:#e9eef9;letter-spacing:.2px;}
 [data-pg-modal][data-pg-seckey="vision"][data-pg-theme="light"] [data-pg-note2]{color:#39434f;}
 [data-pg-modal][data-pg-seckey="vision"] [data-pg-note2] + [data-pg-note2]{margin-top:10px;}
+/* 每日更新提示：3:2 卡片 + 暗色底图（图不再加模糊，只压一层自上而下的暗罩保证字读得清） */
+[data-pg-updcard]{position:relative;width:min(92vw,520px);aspect-ratio:3/2;border-radius:16px;overflow:hidden;background-size:cover;background-position:center;background-repeat:no-repeat;border:1px solid rgba(255,255,255,.14);box-shadow:0 30px 64px rgba(0,0,0,.58);}
+[data-pg-updscrim]{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,9,16,.60) 0%,rgba(6,9,16,.56) 46%,rgba(6,9,16,.90) 100%);}
+[data-pg-updartist]{position:absolute;left:12px;top:11px;z-index:3;font-size:11.5px;font-weight:800;letter-spacing:.2px;color:#f4f7fc;text-decoration:none;padding:3px 10px;border-radius:999px;background:rgba(6,9,16,.55);border:1px solid rgba(255,255,255,.2);}
+[data-pg-updartist]:hover{background:rgba(6,9,16,.78);border-color:rgba(251,191,36,.75);color:#fff;}
+[data-pg-updbody]{position:relative;box-sizing:border-box;height:100%;display:flex;flex-direction:column;justify-content:flex-end;gap:4px;padding:16px 18px 14px;color:#f8fafc;}
+[data-pg-updkicker]{font-size:11.5px;letter-spacing:2.4px;font-weight:700;color:#fbbf24;text-shadow:0 1px 8px rgba(0,0,0,.6);}
+[data-pg-updver]{font-size:27px;font-weight:900;line-height:1.08;letter-spacing:.4px;text-shadow:0 2px 14px rgba(0,0,0,.7);}
+[data-pg-updsub]{font-size:12.5px;color:#dbe3ef;}
+[data-pg-updnote]{font-size:12.5px;line-height:1.65;color:#dbe3ef;margin-top:2px;}
+[data-pg-updact]{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px;}
+[data-pg-updact] [data-pg-btn]{padding:6px 12px;font-size:12px;}
+[data-pg-btn][data-pg-updfocus]{animation:pgPulse 1.1s ease-in-out 3;}
+@keyframes pgPulse{0%,100%{box-shadow:0 0 0 2px rgba(251,191,36,.45);}50%{box-shadow:0 0 0 4px rgba(251,191,36,.95),0 0 26px rgba(251,191,36,.55);}}
 [data-pg-row2],[data-pg-row3],[data-pg-row]{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 12px;}
 [data-pg-stops]{display:flex;flex-direction:column;gap:6px;margin:4px 0 8px;}
 [data-pg-stop]{display:flex;align-items:center;gap:8px;}
@@ -5993,6 +6044,8 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       const [openRound, setOpenRound] = React.useState(null)
       const [roundFx, setRoundFx] = React.useState(null)
       const [settings, setSettings] = React.useState(false)
+      const [updPrompt, setUpdPrompt] = React.useState(null)
+      const [updIntent, setUpdIntent] = React.useState(null)
       const [msg, setMsg] = React.useState('')
       const [tone, setTone] = React.useState('')
       const [libCount, setLibCount] = React.useState(0)
@@ -6010,6 +6063,22 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         resolveBase().then(loadRounds).catch((e) => say(String(e?.message ?? e), 'warn'))
         return () => { alive.current = false }
       }, [loadRounds])
+      /* 每天第一次进主界面查一次更新：有新版本才弹，一天只弹一次（不 force，吃服务端两分钟缓存） */
+      React.useEffect(() => {
+        const KEY = 'pixiv-gallery-updfirst'
+        const todayStr = () => {
+          const d = new Date()
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        }
+        try { if (localStorage.getItem(KEY) === todayStr()) return undefined } catch (e) { /* ignore */ }
+        let live = true
+        resolveBase().then(() => api('/update')).then((r) => {
+          if (!live || !r || !r.update) return
+          try { localStorage.setItem(KEY, todayStr()) } catch (e) { /* ignore */ }
+          setUpdPrompt({ info: r })
+        }).catch(() => { /* 查不到就等明天 */ })
+        return () => { live = false }
+      }, [])
       /* F5：只刷画廊自己的数据，不整页重载（整页会重启 37 个插件，最脆） */
       React.useEffect(() => {
         const fn = () => { try { loadRounds(); api('/library').then((r) => { try { setLibCount((r.works || []).length) } catch { /* ignore */ } }).catch(() => {}) } catch { /* ignore */ } }
@@ -6642,8 +6711,22 @@ async function gotoPixivSettings() {
   return true
 }
 
-function Settings2({ onClose, onSaved, say, embedded = false }) {
+function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = null }) {
       const [panel, setPanel] = React.useState('')
+      /* 「否，我先看看更新了什么」跳进来时，滚到「检查更新」并让它闪三下 */
+      const updBtnRef = React.useRef(null)
+      const [updPulse, setUpdPulse] = React.useState(false)
+      const updIntentAt = updateIntent ? updateIntent.at : 0
+      React.useEffect(() => {
+        if (!updateIntent || !updateIntent.at) return undefined
+        if (updateIntent.mode === 'install') { checkUpdate({ autoInstall: true }); return undefined }
+        const t1 = window.setTimeout(() => {
+          try { updBtnRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }) } catch (e) { /* ignore */ }
+          setUpdPulse(true)
+        }, 240)
+        const t2 = window.setTimeout(() => setUpdPulse(false), 3600)
+        return () => { window.clearTimeout(t1); window.clearTimeout(t2) }
+      }, [updIntentAt])
       const secBtn = (key, title, color) => h('button', {
         key, 'data-pg-secbtn': '', type: 'button',
         style: { borderColor: color, background: 'linear-gradient(180deg,' + color + '26,' + color + '0f)' },
@@ -7194,7 +7277,7 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
           note(`已把 ${r.added} 件已评分作品补进作品库`, 'good')
         } catch (e) { note(String(e?.message ?? e), 'warn') } finally { setBusy('') }
       }
-      const checkUpdate = async () => {
+      const checkUpdate = async (opts = {}) => {
         setBusy('update'); setUpdateMsg(''); setUpd({ loading: true })
         try {
           /* force=1：点了按钮就得看最新，不能拿两分钟前的缓存糊弄 */
@@ -7203,7 +7286,7 @@ function Settings2({ onClose, onSaved, say, embedded = false }) {
           setStars(Number(r.stars) || 0)
           setVersion(String(r.version || version))
           setUpdateMsg(r.update ? `发现新版本 ${r.latest}` : '已是最新')
-          setUpd({ info: r })
+          setUpd({ info: r, autoInstall: !!opts.autoInstall && !!r.update })
         } catch (e) {
           setUpdateMsg(String(e?.message ?? e))
           setUpd({ error: String(e?.message ?? e) })
@@ -8526,7 +8609,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             h('span', { className: 'pg-star-l' }, 'Star⭐'),
             h('span', { className: 'pg-star-r' },
               stars === null ? '—' : (stars >= 1000 ? `${(stars / 1000).toFixed(stars >= 10000 ? 0 : 1).replace(/\.0$/, '')}k` : String(stars)))),
-            h('button', { 'data-pg-btn': '', disabled: busy === 'update', onClick: checkUpdate }, busy === 'update' ? '检查中…' : '检查更新'),
+            h('button', { ref: updBtnRef, 'data-pg-btn': '', 'data-pg-updfocus': updPulse ? '' : undefined, disabled: busy === 'update', onClick: () => checkUpdate() }, busy === 'update' ? '检查中…' : '检查更新'),
             updateMsg ? h('span', { 'data-pg-note2': '' }, updateMsg) : null),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             h('a', { href: 'https://space.bilibili.com/1620499208?spm_id_from=333.1387.0.0', target: '_blank', rel: 'noreferrer', 'data-pg-link': '', 'data-bili': '' }, '▶ B站'),
@@ -10937,7 +11020,18 @@ function GalleryTab2({ onScopeChanged }) {
                     if (o) setTimeout(() => { runNow({ ...o, skipRatingGate: true }) }, 30)
                   },
                 }, '继续跑一轮')))) : null,
-        settings ? h(Settings2, { onClose: () => setSettings(false), onSaved: () => { onScopeChanged?.(); loadAll() }, say }) : null)
+        updPrompt ? h(UpdatePrompt, {
+          info: updPrompt.info,
+          onClose: () => setUpdPrompt(null),
+          onYes: () => { setUpdPrompt(null); setUpdIntent({ mode: 'install', at: Date.now() }); setSettings(true) },
+          onNo: () => { setUpdPrompt(null); setUpdIntent({ mode: 'check', at: Date.now() }); setSettings(true) },
+        }) : null,
+        settings ? h(Settings2, {
+          onClose: () => { setSettings(false); setUpdIntent(null) },
+          onSaved: () => { onScopeChanged?.(); loadAll() },
+          say,
+          updateIntent: updIntent,
+        }) : null)
     }
 
     /* ────────────────────────── 工作区可见性 ────────────────────────── */
