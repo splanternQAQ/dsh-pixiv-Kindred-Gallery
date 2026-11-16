@@ -17,6 +17,22 @@ window.__ModuleLoader__.load({
     const BASES = ['/pixiv-gallery/api', '/api/pixiv-gallery']
     let BASE = BASES[0]
 
+    /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
+       插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
+    const CLIENT_BUILD = '1.3.4'
+    const pgReload = () => { try { location.reload() } catch { /* ignore */ } }
+    try {
+      /* Ctrl+R / Cmd+R 有时候被宿主截胡按下去像没反应：自己再挂一道，保证这两个键真能重取 bundle */
+      window.addEventListener('keydown', (e) => {
+        const k = String(e.key || '').toLowerCase()
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && k === 'r') {
+          e.preventDefault()
+          e.stopPropagation()
+          pgReload()
+        }
+      }, true)
+    } catch { /* ignore */ }
+
     /* 前端异常自述：白屏时不能只靠肉眼猜，把渲染期报错送回 gallery.log（服务端 /client-log 只写日志） */
     try {
       const pgReport = (kind, msg, stack) => {
@@ -246,6 +262,29 @@ window.__ModuleLoader__.load({
           h('div', { 'data-pg-updact': '' },
             h('button', { 'data-pg-btn': '', type: 'button', onClick: onNo }, '否，我先看看更新了什么'),
             h('button', { 'data-pg-btn': '', 'data-primary': '', type: 'button', onClick: onYes }, '是，立即更新')))))
+    }
+
+    /**
+     * 开跑前的拦截：没有任何一个「真能看图」的模型。
+     * 说的是「不能筛」而不是「不能抓」，所以文案只围绕识图，并给一颗直跳设置的按钮。
+     */
+    function VisionBlockSheet({ data, onClose, onJump }) {
+      const checks = Array.isArray(data?.checks) ? data.checks : []
+      const nameOf = (k) => (k === 'custom' ? '自定义端点' : k === 'gateway' ? '本机网关' : k === 'host' ? 'DSH 宿主模型' : k)
+      return h('div', { 'data-pg-modal': '', 'data-pg-gate': '', style: { zIndex: 425 }, onClick: onClose },
+        h('div', { 'data-pg-sheet': '', 'data-pg-gatesheet': '', onClick: (e) => e.stopPropagation() },
+          h('div', { 'data-pg-gatetitle': '' }, '暂无可用的识图模型！'),
+          h('div', { 'data-pg-gatenote': '' }, '无法进行筛选 —— 请自定义设置模型。'),
+          h('div', { 'data-pg-gatenote': '' }, 'AI 精挑要给每一张图打分，得先有一个真的看得懂图的模型。模型「支持图片」不等于它认得出图：有的会把整张图看成「未知」。'),
+          checks.length
+            ? h('div', { 'data-pg-gatenote': '' },
+              '刚试过的通路：',
+              checks.map((c) => `${nameOf(c.kind)} · ${c.model || '（没取到模型）'} · ${c.ok ? '可以看图' : c.error ? '连不上' : `答的是「${c.answer || '空'}」`}`).join('；'),
+              '。')
+            : null,
+          h('div', { 'data-pg-gateact': '' },
+            h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose }, '先不跑'),
+            h('button', { 'data-pg-btn': '', 'data-primary': '', type: 'button', onClick: onJump }, '去设置识图模型'))))
     }
 
     /* 缩略图右键菜单：只做「复制当前作品到剪贴板」，blob 在右键时就开始取，点下去立刻写剪贴板 */
@@ -2248,6 +2287,11 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-modal][data-pg-seckey="vision"] [data-pg-note2]{font-size:13px;line-height:1.95;color:#e9eef9;letter-spacing:.2px;}
 [data-pg-modal][data-pg-seckey="vision"][data-pg-theme="light"] [data-pg-note2]{color:#39434f;}
 [data-pg-modal][data-pg-seckey="vision"] [data-pg-note2] + [data-pg-note2]{margin-top:10px;}
+[data-pg-stale]{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:900;display:flex;align-items:center;gap:10px;max-width:min(92vw,640px);padding:8px 12px;border-radius:999px;border:1px solid rgba(56,189,248,.55);background:rgba(8,20,32,.92);color:#bfe9ff;font-size:12px;line-height:1.45;box-shadow:0 10px 26px rgba(0,0,0,.38);}
+[data-pg-theme="light"] [data-pg-stale]{background:#eaf7ff;border-color:#7dd3fc;color:#0b5c86;box-shadow:0 10px 24px rgba(15,23,42,.14);}
+[data-pg-stale] button{border:1px solid rgba(56,189,248,.7);background:rgba(56,189,248,.18);color:#dff4ff;border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;white-space:nowrap;}
+[data-pg-theme="light"] [data-pg-stale] button{background:#d8efff;color:#08496a;}
+[data-pg-stale] button:hover{background:rgba(56,189,248,.3);}
 /* 每日更新提示：3:2 卡片 + 暗色底图（图不再加模糊，只压一层自上而下的暗罩保证字读得清） */
 [data-pg-updcard]{position:relative;width:min(92vw,520px);aspect-ratio:3/2;border-radius:16px;overflow:hidden;background-size:cover;background-position:center;background-repeat:no-repeat;border:1px solid rgba(255,255,255,.14);box-shadow:0 30px 64px rgba(0,0,0,.58);}
 [data-pg-updscrim]{position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,9,16,.60) 0%,rgba(6,9,16,.56) 46%,rgba(6,9,16,.90) 100%);}
@@ -5042,6 +5086,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       const [busy, setBusy] = React.useState('')
       const [menu, setMenu] = React.useState(null)
       const [cardMenu, setCardMenu] = React.useState(null)
+
       const [saveWork, setSaveWork] = React.useState(null)
       const [collPick, setCollPick] = React.useState(null)
       const [batchColl, setBatchColl] = React.useState(false)
@@ -6712,8 +6757,10 @@ async function gotoPixivSettings() {
   return true
 }
 
-function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = null }) {
+function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = null, openPanel = '' }) {
       const [panel, setPanel] = React.useState('')
+      /* 从跑轮前的拦截弹窗跳进来时，直接落在「视觉后端」那一栏 */
+      React.useEffect(() => { if (openPanel) setPanel(openPanel) }, [openPanel])
       /* 「否，我先看看更新了什么」跳进来时，滚到「检查更新」并让它闪三下 */
       const updBtnRef = React.useRef(null)
       const [updPulse, setUpdPulse] = React.useState(false)
@@ -9024,6 +9071,21 @@ function GalleryTab2({ onScopeChanged }) {
   const [deleted, setDeleted] = React.useState(null)
   const [delArm, setDelArm] = React.useState('')
   const [cardMenu, setCardMenu] = React.useState(null)
+  /* 界面版本检查：插件更新后旧 bundle 还挂着、新代码永远不出现 —— 这里每分钟对一次版本号 */
+  const [staleVer, setStaleVer] = React.useState('')
+  React.useEffect(() => {
+    let stop = false
+    const tick = () => {
+      api('/status').then((r) => {
+        if (stop) return
+        const v = String((r && r.version) || '')
+        setStaleVer(!v || v === CLIENT_BUILD ? '' : v)
+      }).catch(() => { /* 探测失败就当没更新 */ })
+    }
+    tick()
+    const iv = setInterval(tick, 60000)
+    return () => { stop = true; clearInterval(iv) }
+  }, [])
   const [drag, setDrag] = React.useState(null)
   const dragRef = React.useRef(null)
   const pressRef = React.useRef(null)
@@ -9056,6 +9118,8 @@ function GalleryTab2({ onScopeChanged }) {
       const [settings, setSettings] = React.useState(false)
       const [updPrompt, setUpdPrompt] = React.useState(null)
       const [updIntent, setUpdIntent] = React.useState(null)
+      const [visionBlock, setVisionBlock] = React.useState(null) // 开跑前体检没过：没有任何真能看图的模型
+      const [panelIntent, setPanelIntent] = React.useState('') // 跳设置页时直接落在哪一栏（'vision'）
       /* 每天第一次进主界面查一次更新：有新版本才弹，一天只弹一次（不 force，吃服务端两分钟缓存） */
       React.useEffect(() => {
         const KEY = 'pixiv-gallery-updfirst'
@@ -9406,6 +9470,48 @@ function GalleryTab2({ onScopeChanged }) {
       }, [])
       /* 切回来时：进度条还在就继续显示并接着轮询；这一轮已经结束就收尾 */
       React.useEffect(() => {
+        /* 整批的账本先认：切界面（组件卸载）之后整批还在跑，回来要把「第 i / n 轮」接上；
+           跑完了则把结算卡再弹一次 —— 以前这些全在内存里，切一下就什么都没了。 */
+        try {
+          const doneRaw = localStorage.getItem('pixiv-gallery.batch.done')
+          if (doneRaw) {
+            localStorage.removeItem('pixiv-gallery.batch.done')
+            const done = JSON.parse(doneRaw)
+            if (done && (done.total || done.rows)) {
+              setMultiSummary({ ...done, parked: false })
+              try { localStorage.removeItem('pixiv-gallery.batch') } catch (e) { /* ignore */ }
+            }
+          }
+        } catch (e) { /* 坏数据就丢掉 */ }
+        try {
+          const bRaw = localStorage.getItem('pixiv-gallery.batch')
+          if (bRaw) {
+            const b = JSON.parse(bRaw)
+            if (b && b.n) {
+              setMultiRun({ i: Number(b.i) || 1, n: Number(b.n) || 1 })
+              setBusy('run')
+              const bid = String(b.id || '')
+              let stopB = false
+              const tickB = async () => {
+                if (stopB) return
+                try {
+                  const s = await api('/fast/progress')
+                  if (s && s.running) return
+                  /* 这一批最后一次写盘已经超过 90 秒、后端又没在跑：当作断了 */
+                  if (Date.now() - Number(b.t0 || 0) < 90 * 1000) return
+                  stopB = true
+                  setMultiRun(null)
+                  setBusy('')
+                  if (s && s.phase === 'error') say('这一批没跑完：' + String(s.error || '被中断了').slice(0, 100), 'warn')
+                  try { localStorage.removeItem('pixiv-gallery.batch') } catch (e) { /* ignore */ }
+                } catch (e) { /* 下一跳再试 */ }
+              }
+              tickB()
+              const tB = setInterval(tickB, 2500)
+              return () => { stopB = true; clearInterval(tB) }
+            }
+          }
+        } catch (e) { /* ignore */ }
         const saved = readRunProg()
         if (!saved) return
         if (saved.engine === 'fast') {
@@ -9545,9 +9651,22 @@ function GalleryTab2({ onScopeChanged }) {
           ? `✓ pixiv 已连通（${pre.proxy ? '经代理 ' + pre.proxy : '直连'} · ${Number(pre.ms) || 0}ms）· 账号已登录 · 开始正式抓图`
           : ''
         if (preLine && !quiet) say(preLine, 'good', 6000, true)
+        /* 开跑前的识图体检：没有任何一个真能看图的模型时，AI 精挑就是瞎猜 ——
+           先拦下来，把主人送到「设置 → 视觉后端」，而不是跑完一轮才发现全是糊的。 */
+        if (!opt.skipVisionCheck) {
+          let vr = null
+          try { vr = await api('/vision/ready') } catch (e) { /* 老版本没有这条路由，按可用处理 */ }
+          if (vr && vr.ready === false) {
+            if (alive.current) setBusy(null)
+            if (alive.current) setPreflight(null)
+            if (alive.current) setVisionBlock({ reason: vr.reason || '', checks: vr.checks || [] })
+            return { ok: false, reason: 'no-vision' }
+          }
+        }
         try {
           const w = JSON.parse(localStorage.getItem('pixiv-gallery.ach.wait') || '{}')
-          if (!w.startAt) localStorage.setItem('pixiv-gallery.ach.wait', JSON.stringify({ ...w, startAt: Date.now() }))
+          /* 老版本留下的墙钟账本一次性清掉：它正是「细水长流」被刷出来的源头 */
+          if (w && (w.startAt || w.total)) localStorage.removeItem('pixiv-gallery.ach.wait')
         } catch { /* ignore */ }
         let patch = null
         let oldCfg = null
@@ -9624,7 +9743,7 @@ function GalleryTab2({ onScopeChanged }) {
             const pt = setInterval(pollFast, 900)
             void pollFast()
             let fr = null
-            try { fr = await api('/fast/run', { preset: presetUsed }) } finally { clearInterval(pt) }
+            try { fr = await api('/fast/run', { preset: presetUsed, batchId: opt.batch?.batchId || '', batchRounds: opt.batch?.n || 0 }) } finally { clearInterval(pt) }
             if (fr?.ok === false) throw new Error(fr?.error || '快跑失败')
             if (!fr?.round) {
               if (alive.current) setRunProg(null)
@@ -9827,9 +9946,12 @@ function GalleryTab2({ onScopeChanged }) {
             : `这一批 ${got} 张卡片已经摆好啦，合不合口味你说了算～`)
         return { total, ms, got, scanned, checked, vPicked, tags, r18, greet, flavor, preset: presetName || '当前设置', strictness: strictLevel, favArtist, rows }
       }
-      const runMany = async (n, fromRound = 1) => {
+      const runMany = async (n, fromRound = 1, batchId = '') => {
         const total = Math.max(2, Math.min(10, Math.round(Number(n) || 3)))
         const startAt = Math.max(1, Math.min(total, Math.round(Number(fromRound) || 1)))
+        /* 整批共用一个 batchId：服务端靠它记住「抓图额度」和上一轮剩下的池子。
+           续跑（确认弹窗之后）沿用同一个 id，不然池子和额度会重来。 */
+        const bid = String(batchId || '') || ('b' + Date.now().toString(36) + Math.floor(Math.random() * 1000))
         try { localStorage.setItem('pixiv-gallery.multiN', String(total)) } catch { /* ignore */ }
         setMultiSummary(null)
         multiSlowRef.current = null
@@ -9841,21 +9963,23 @@ function GalleryTab2({ onScopeChanged }) {
         let stopped = 0
         let lastFail = null
         for (let i = startAt; i <= total; i++) {
-          if (!alive.current) break
           setMultiRun({ i, n: total })
+          /* 整批进度落盘：切界面/组件卸载后，回来时靠这条记录把进度条接上 */
+          try { localStorage.setItem('pixiv-gallery.batch', JSON.stringify({ id: bid, i, n: total, t0, rows })) } catch (e) { /* ignore */ }
           if (i > 1) say(`跑多轮：第 ${i} / ${total} 轮开始…`, 'good', 2600, true)
           let r = null
-          try { r = await runNow({ quiet: i > 1, keepBusy: true, batch: { i, n: total } }) } catch (e) { r = { ok: false, error: String(e?.message ?? e) } }
+          try { r = await runNow({ quiet: i > 1, keepBusy: true, batch: { i, n: total, batchId: bid } }) } catch (e) { r = { ok: false, error: String(e?.message ?? e) } }
           /* 第 1 轮被 R-18 确认弹窗拦下：弹窗已经打开，把「继续」绑成整批重跑。
              以前这里直接 stopped=1 断掉，确认按钮只会补跑单轮——多轮就此丢了。 */
           if (r && r.reason === 'rating') {
             /* 记下这一批跑到哪儿了，弹窗里要写「已暂停」，关掉后还要出结算 */
-            gateBatchRef.current = { i, n: total, rows: rows.slice(), okCount, t0 }
+            gateBatchRef.current = { i, n: total, rows: rows.slice(), okCount, t0, batchId: bid }
             gateResume.current = () => {
               const gb = gateBatchRef.current
               const at = gb ? gb.i : 1
+              const keepId = gb ? gb.batchId : ''
               gateBatchRef.current = null
-              return runMany(total, at)
+              return runMany(total, at, keepId)
             }
             setMultiRun(null)
             setBusy('')
@@ -9867,27 +9991,34 @@ function GalleryTab2({ onScopeChanged }) {
           rows.push({ i, ok: true, got: Number(r.got) || 0, round: r.round || '', ms: Number(r.ms) || 0, scanned: Number(r.scanned) || 0, checked: Number(r.checked) || 0, vPicked: Number(r.vPicked) || 0, net: r.net || null })
           if (i < total) await new Promise((res) => setTimeout(res, 1800))
         }
-        if (!alive.current) return
-        setMultiRun(null)
-        setBusy('')
+        /* 这里刻意不按 alive 提前返回：切界面会让组件卸载，但整批还要继续跑。
+           进度与结算都落到 localStorage，回来时由恢复逻辑接着显示。 */
+        if (alive.current) { setMultiRun(null); setBusy('') }
         const ms = Date.now() - t0
+        const saveDone = (obj) => {
+          try { localStorage.setItem('pixiv-gallery.batch.done', JSON.stringify({ ...obj, at: Date.now() })) } catch (e) { /* ignore */ }
+          try { localStorage.removeItem('pixiv-gallery.batch') } catch (e) { /* ignore */ }
+        }
         if (!stopped && okCount === total) {
           say(`跑多轮完成：连续 ${total} 轮都摆好卡片了`, 'good', 6000)
           try {
             const sum = await buildMultiSummary(rows, ms, total)
+            const s = { ...sum, slow: Boolean(multiSlowRef.current) }
+            saveDone(s)
             if (alive.current) {
-              const s = { ...sum, slow: Boolean(multiSlowRef.current) }
               if (inDetailRef.current) setPendingSummary({ ...s, parked: true })
               else setMultiSummary(s)
             }
-          } catch { /* 总结失败就只用 toast */ }
+          } catch { saveDone({ rows, ms, total, halted: false }) }
         }
         else if (stopped < 0) {
           say(`跑多轮：第 ${-stopped} 轮走的是旧 AI 异步流程，后面的轮次没有继续`, 'warn', 6000)
           try {
             const sum = await buildMultiSummary(rows, ms, total)
-            if (alive.current) setMultiSummary({ ...sum, title: `跑多轮已暂停 · 完成 ${okCount} / ${total} 轮`, halt: { at: -stopped, n: total, why: '这一轮走的是旧的 AI 异步流程，拿不到结果', okCount } })
-          } catch { /* 拿不到详情就只留提示 */ }
+            const s = { ...sum, title: `跑多轮已暂停 · 完成 ${okCount} / ${total} 轮`, halt: { at: -stopped, n: total, why: '这一轮走的是旧的 AI 异步流程，拿不到结果', okCount } }
+            saveDone(s)
+            if (alive.current) setMultiSummary(s)
+          } catch { saveDone({ rows, ms, total, halted: true }) }
         }
         else if (stopped) {
           /* 说清到底为什么停：预检没过（连不上/被限流）、卡住没停干净、缺依赖，还是这一轮自己没出结果 */
@@ -9902,8 +10033,10 @@ function GalleryTab2({ onScopeChanged }) {
           say(`跑多轮停在第 ${stopped} 轮：${why}（已成功 ${okCount} 轮，前面的保留）`, 'warn', 9000)
           try {
             const sum = await buildMultiSummary(rows, ms, total)
-            if (alive.current) setMultiSummary({ ...sum, title: `跑多轮已暂停 · 完成 ${okCount} / ${total} 轮`, halt: { at: stopped, n: total, why, okCount } })
-          } catch { /* 拿不到详情就只留提示 */ }
+            const s = { ...sum, title: `跑多轮已暂停 · 完成 ${okCount} / ${total} 轮`, halt: { at: stopped, n: total, why, okCount } }
+            saveDone(s)
+            if (alive.current) setMultiSummary(s)
+          } catch { saveDone({ rows, ms, total, halted: true, halt: { at: stopped, n: total, why, okCount } }) }
         }
       }
       const alive = React.useRef(true)
@@ -10055,6 +10188,9 @@ function GalleryTab2({ onScopeChanged }) {
           const cfg = cr && cr.config ? cr.config : cr
           const ratedN = Number(cfg && cfg.lifetimeRated) || 0
           if (ratedN >= 1000) queueAch('scoring')
+          /* 细水长流：服务器累计的真实跑轮耗时（只算真的产出新卡片的那几轮） */
+          const waitN = Number(cfg && cfg.achWaitMs) || 0
+          if (waitN >= 24 * 3600 * 1000) queueAch('long')
         } catch { /* ignore */ }
       }, [queueAch])
       React.useEffect(() => {
@@ -10081,14 +10217,8 @@ function GalleryTab2({ onScopeChanged }) {
         try { last = localStorage.getItem('pixiv-gallery.ach.lastRound') || '' } catch { /* ignore */ }
         if (last === newest) return
         try { localStorage.setItem('pixiv-gallery.ach.lastRound', newest) } catch { /* ignore */ }
-        try {
-          const w = JSON.parse(localStorage.getItem('pixiv-gallery.ach.wait') || '{}')
-          if (w.startAt) {
-            const total = (Number(w.total) || 0) + Math.max(0, Date.now() - Number(w.startAt))
-            localStorage.setItem('pixiv-gallery.ach.wait', JSON.stringify({ total }))
-            if (total >= 24 * 3600 * 1000) queueAch('long')
-          }
-        } catch { /* ignore */ }
+        /* 注意：等待时长不再在这里累加 —— 那份墙钟会把闲置、切窗口、失败重开都算成「等待」，
+           现在由服务端按每轮真实耗时累进 config.achWaitMs，这里只负责「连续 R18」那条。 */
         if (!last) return
         ;(async () => {
           try {
@@ -10314,6 +10444,10 @@ function GalleryTab2({ onScopeChanged }) {
 
 
       return h('div', { 'data-pg-page': '' },
+        staleVer ? h('div', { 'data-pg-stale': '' },
+          h('span', {}, `界面这份还是 ${CLIENT_BUILD}，插件已经是 ${staleVer} —— 新的界面代码要整页重取才会换上。`),
+          h('button', { onClick: pgReload }, String(navigator?.platform || '').includes('Mac') ? '⌘R 刷新' : '点这里刷新'),
+        ) : null,
         h('div', { 'data-pg-head': '' },
           h('div', {},
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
@@ -10812,11 +10946,12 @@ function GalleryTab2({ onScopeChanged }) {
                   try { localStorage.setItem(MAN_ACH_KEY, '1') } catch { /* ignore */ }
                   window.setTimeout(() => { if (alive.current) queueAch('oo') }, 3200)
                 }
-                if (sc >= 8.9) {
-                  const row = (rounds || []).find((r) => r.round === which)
-                  const doneCards = (rounds || []).filter((r) => Number(r.total) > 0 && Number(r.rated) >= Number(r.total)).length
-                  if (doneCards >= 50 && Number(row && row.removed) > 0) queueAch('zenith')
-                }
+              }
+              /* 臻于至善：任何预设都算（以前错写在 man 模式分支里，只有 man 才能解锁） */
+              if (Number.isFinite(sc) && sc >= 8.9) {
+                const row = (rounds || []).find((r) => r.round === which)
+                const doneCards = (rounds || []).filter((r) => Number(r.total) > 0 && Number(r.rated) >= Number(r.total)).length
+                if (doneCards >= 50 && Number(row && row.removed) > 0) queueAch('zenith')
               }
               window.setTimeout(() => { void checkAch() }, 900)
               setRoundFx({ round: which, perfect: Boolean(info.perfect), at: Date.now(), text, tone })
@@ -11119,11 +11254,18 @@ function GalleryTab2({ onScopeChanged }) {
           onYes: () => { setUpdPrompt(null); setUpdIntent({ mode: 'install', at: Date.now() }); setSettings(true) },
           onNo: () => { setUpdPrompt(null); setUpdIntent({ mode: 'check', at: Date.now() }); setSettings(true) },
         }) : null,
+        visionBlock ? h(VisionBlockSheet, {
+          data: visionBlock,
+          onClose: () => setVisionBlock(null),
+          /* 「去设置识图模型」：直接开设置并落到「视觉后端」那一栏，不让主人自己去翻 */
+          onJump: () => { setVisionBlock(null); setPanelIntent('vision'); setSettings(true) },
+        }) : null,
         settings ? h(Settings2, {
-          onClose: () => { setSettings(false); setUpdIntent(null) },
+          onClose: () => { setSettings(false); setUpdIntent(null); setPanelIntent('') },
           onSaved: () => { onScopeChanged?.(); loadAll() },
           say,
           updateIntent: updIntent,
+          openPanel: panelIntent,
         }) : null)
     }
 

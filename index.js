@@ -184,7 +184,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.3.0'
+const GALLERY_VERSION = '1.3.4'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 
 function bad(status, error, extra = {}) {
@@ -1282,7 +1282,8 @@ const probeNetwork = async () => {
           ...tagNames,
           ...((taste?.tagRows || []).filter((x) => Number(x.weight) > 0.05).slice(0, 20).map((x) => x.tag)),
         ])].slice(0, 80)
-        styleGot = await analyzeStyleProfile(ctx, {
+        /* 走 loadVision() 而不是顶层静态 import：改完 lib/vision.mjs 只用 /reload-self 就能生效，不必重启 DSH */
+    styleGot = await (await loadVision()).analyzeStyleProfile(ctx, {
           home, works: styleWorks, favoriteTags: mergedTags, source: 'account-import', maxSamples: 18, batch: 5, log,
         })
       }
@@ -1663,6 +1664,9 @@ const probeNetwork = async () => {
   /* ── 下载任务进度（给作品库卡片的「水杯」动画用） ── */
   const libCache = { at: 0, key: '', data: null }
 let fastProg = null // 快跑实时进度：/fast/run 写、/fast/progress 读
+/* 跑多轮的整批状态：一份抓图额度（每轮张数 × 轮数 × 10）+ 上一轮剩下的候选池。
+   额度用完就只从池子里选，不再抓图；池子跨轮存在这里，切界面/重启客户端都不影响。 */
+const fastBatches = new Map()
 /* 进度也落一份盘：面板重挂 / 切窗口回来 / DSH 重启之后，前端还知道这一轮跑到哪、是成了还是断了 */
 const progFile = () => join(home, 'run-progress.json')
 let progSavedAt = 0
@@ -3798,6 +3802,20 @@ const routes = {
         }
         const t0 = Date.now()
         const dryRun = Boolean(body?.dryRun)
+        /* 跑多轮：整批共用一份抓图额度。batchId 由客户端在开跑时生成，续跑沿用同一个。 */
+        const batchId = String(body?.batchId || '').trim()
+        const batchRounds = Math.max(1, Math.min(20, Number(body?.batchRounds) || 1))
+        let bState = null
+        if (batchId) {
+          bState = fastBatches.get(batchId) || null
+          if (!bState) {
+            const perRound = Math.max(1, Math.min(16, Number(preset.cards) || 16))
+            bState = { cap: perRound * batchRounds * 5, used: 0, pool: [], usedIds: new Set(), rounds: batchRounds, createdAt: Date.now() }
+            fastBatches.set(batchId, bState)
+            log(`跑多轮：整批抓图额度 ${bState.cap} 次（每轮 ${perRound} 张 × ${batchRounds} 轮 × 5）`)
+          }
+          for (const [k, v] of fastBatches) if (Date.now() - v.createdAt > 2 * 3600 * 1000) fastBatches.delete(k)
+        }
         fastProg = { running: true, phase: 'start', target: Math.max(1, Math.min(16, Number(preset.cards) || 16)), scanned: 0, checked: 0, got: 0, updatedAt: Date.now() }
         saveFastProg(true)
         const blTags = String((load().config.blacklistTags) || '').split(/[;；,，\n]/).map((x) => String(x || '').trim()).filter(Boolean)
@@ -3808,6 +3826,7 @@ const routes = {
             home, pixiv, preset, skipIds: skip, log,
             libraryWorks,
             dryRun,
+            batch: bState ? { remaining: bState.cap - bState.used, usedIds: bState.usedIds, pool: bState.pool } : null,
             visionSelect: async (args) => (await loadVision()).scoreWorks(ctx, { home, config: load().config || {}, ...args, log }),
             onProgress: (pg) => {
               fastProg = { ...pg, running: true, updatedAt: Date.now(), net: { route: (() => { try { return currentRoute() } catch { return '' } })(), tries: (() => { try { return routeReport() } catch { return [] } })() } }
@@ -3829,6 +3848,28 @@ const routes = {
           ms: Date.now() - t0,
         }
         saveFastProg(true)
+        /* 细水长流：只认服务器自己量出来的这一轮耗时，且必须真的产出了新卡片。
+           以前是前端拿 localStorage 的墙钟算，闲置、切窗口、失败重开都会被算进去，快得离谱。 */
+        try {
+          if (!dryRun && Number(res?.staged) > 0) {
+            const waitMs = Math.max(0, Math.min(Date.now() - t0, 2 * 3600 * 1000))
+            st.config.achWaitMs = Math.min(7 * 24 * 3600 * 1000, (Number(st.config.achWaitMs) || 0) + waitMs)
+            save()
+            log(`细水长流：这一轮等了 ${Math.round(waitMs / 60000)} 分钟，累计 ${Math.round(st.config.achWaitMs / 60000)} / 1440 分钟`)
+          }
+        } catch { /* ignore */ }
+        /* 整批账本：这一轮真抓了多少详情、池子更新成什么、哪些 id 已经被选走 */
+        let batchOut = null
+        if (bState) {
+          bState.used += Number(res?.fetched) || 0
+          if (Array.isArray(res?.pool)) bState.pool = res.pool
+          try {
+            const rd = loadRound(pixiv, res.round)
+            for (const it of rd.items || []) bState.usedIds.add(String(it.id))
+          } catch { /* 记不上不影响下一轮 */ }
+          batchOut = { id: batchId, cap: bState.cap, used: bState.used, left: Math.max(0, bState.cap - bState.used), pool: bState.pool.length }
+          log(`跑多轮：抓图额度已用 ${bState.used} / ${bState.cap}（池里还剩 ${bState.pool.length} 件）`)
+        }
         if (res?.round && res?.staged > 0) {
           try {
             const rd = loadRound(pixiv, res.round)
@@ -3851,7 +3892,7 @@ const routes = {
         /* 这一轮真正走了哪条路：直连还是某个代理，以及中间换过几次 */
         const routeNow = (() => { try { return currentRoute() } catch { return '' } })()
         const tries = (() => { try { return routeReport() } catch { return [] } })()
-        return ok({ ...res, ms: Date.now() - t0, preset: preset.name, skipCount: skip.size, net: { route: routeNow, direct: !routeNow, tries } })
+        return ok({ ...res, ms: Date.now() - t0, preset: preset.name, skipCount: skip.size, batch: batchOut, net: { route: routeNow, direct: !routeNow, tries } })
       },
     },
 
@@ -3963,7 +4004,7 @@ const routes = {
           if (!samples.length) throw new Error('作品库还没有带评分的作品。先多打几个 9/10 分再分析，数据越多越准。')
           tick(`样本 ${samples.length} 张（库内高分 ${pack.libraryCount} 张 + 最近卡片 ${pack.roundCount} 张）`)
           tick('发给视觉模型看画风（可能要 30–90 秒）')
-          const style = await analyzeStyleProfile(ctx, {
+          const style = await (await loadVision()).analyzeStyleProfile(ctx, {
             config: st.config || {},
             home,
             works: samples,
@@ -4090,6 +4131,20 @@ const routes = {
         try {
           const v = await loadVision()
           return ok(await v.visionStatus(ctx, { config: load().config || {} }))
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
+    /* 跑轮前的能力体检：三个渠道各发一张纯色图问颜色，答对了才算「真能看图」。
+       缓存 5 分钟，客户端在开跑前问一次；?force=1 破缓存（设置页自检用）。 */
+    '/vision/ready': {
+      methods: ['GET', 'POST'],
+      handler: async (q) => {
+        try {
+          const v = await loadVision()
+          const force = String(q?.get?.('force') || '') === '1'
+          return ok(await v.probeVision(ctx, { config: load().config || {}, force }))
         } catch (e) {
           return bad(500, String(e?.message ?? e).slice(0, 200))
         }
