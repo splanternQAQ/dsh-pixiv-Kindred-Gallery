@@ -19,8 +19,60 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.3.4'
-    const pgReload = () => { try { location.reload() } catch { /* ignore */ } }
+    const CLIENT_BUILD = '1.3.5'
+    /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
+       宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
+       改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
+    /* 判定「整页真的被刷新过」：只认 PerformanceNavigationTiming 的 type === 'reload'。
+       切 tab 重新求值模块时这份 timing 还挂在 navigate 上，所以不会误弹；
+       用户按 F5 那次日志实测就是 reload（2026-11-16T17:38:30 那条「刚整页重取过」就是它判出来的）。 */
+    let pgJustReloaded = false
+    try {
+      const navs = (performance.getEntriesByType && performance.getEntriesByType('navigation')) || []
+      const navType = navs.length ? String(navs[0].type || '') : ''
+      pgJustReloaded = navType === 'reload'
+    } catch { /* ignore */ }
+    const pgReload = () => {
+      try { location.reload() } catch { /* ignore */ }
+    }
+    /* 刷新确认用「直接挂到 body 上的小条」，不走 React 树：
+       挂在页面里的话，只有〔知心画廊〕那个 tab 正好开着才看得见，其它 tab 下等于没有。
+       外形照插件自己的 toast（`[data-pg-toast]` 那套绿药丸），位置也在顶部。 */
+    const pgToast = (text, holdMs = 6000) => {
+      const rep = (msg) => {
+        try {
+          fetch(BASE + '/client-log', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ kind: 'toast', message: String(msg || '').slice(0, 400), stack: '', url: String(location?.href || '') }),
+          }).catch(() => { /* ignore */ })
+        } catch { /* ignore */ }
+      }
+      try {
+        const paint = () => {
+          if (!document.body) { rep('body 还没就绪，等下一轮'); setTimeout(paint, 120); return }
+          if (document.querySelector('[data-pg-boottoast]')) { rep('已经有同款 toast，跳过'); return }
+          const el = document.createElement('div')
+          el.setAttribute('data-pg-boottoast', '')
+          el.style.cssText = [
+            'position:fixed', 'left:50%', 'bottom:26px', 'transform:translateX(-50%)', 'z-index:2147483000',
+            'max-width:min(560px,86vw)', 'padding:9px 16px', 'border-radius:999px',
+            'font-size:13px', 'font-weight:750', 'line-height:1.45', 'text-align:center',
+            'color:#f0fdf4', 'background:rgba(20,83,45,.90)', 'border:1px solid rgba(74,222,128,.55)',
+            'box-shadow:0 10px 34px rgba(0,0,0,.42)', 'pointer-events:none',
+            'transition:opacity .35s ease', 'opacity:1',
+          ].join(';')
+          el.textContent = text
+          document.body.appendChild(el)
+          const r = el.getBoundingClientRect()
+          rep('已挂上：connected=' + el.isConnected + ' top=' + Math.round(r.top) + ' h=' + Math.round(r.height) + ' w=' + Math.round(r.width) + ' body=' + document.body.clientWidth + 'x' + document.body.clientHeight + ' vis=' + String(document.visibilityState) + ' win=' + window.innerWidth + 'x' + window.innerHeight)
+          setTimeout(() => { el.style.opacity = '0' }, Math.max(1200, holdMs - 400))
+          setTimeout(() => { try { el.remove(); rep('已移除') } catch { /* ignore */ } }, holdMs)
+        }
+        paint()
+      } catch (e) { rep('抛错：' + (e && e.message)) }
+    }
+    /* 模块级合成 toast 在宿主里会被盖住：改由页面自己那条 toast 报（见 GalleryTab2 的挂载 effect） */
     try {
       /* Ctrl+R / Cmd+R 有时候被宿主截胡按下去像没反应：自己再挂一道，保证这两个键真能重取 bundle */
       window.addEventListener('keydown', (e) => {
@@ -49,6 +101,8 @@ window.__ModuleLoader__.load({
       }
       window.addEventListener('error', (e) => pgReport('error', e?.message || e?.error?.message, e?.error?.stack || ''))
       window.addEventListener('unhandledrejection', (e) => pgReport('rejection', e?.reason?.message || e?.reason, e?.reason?.stack || ''))
+      /* 每次加载都报一下自己这份是哪个 build：日志里就能看出界面到底换没换 */
+      try { pgReport('build', CLIENT_BUILD + (pgJustReloaded ? ' · 刚整页重取过' : ' · 启动加载')) } catch { /* ignore */ }
     } catch { /* ignore */ }
 
     const asJson = async (res) => {
@@ -2419,6 +2473,9 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-btn]:not([data-pg-run]){padding:5px 9px;font-size:11.5px;}
 [data-pg-jobs-hint]{font-size:11px;line-height:16px;color:#fbbf24;margin-left:2px;}
 [data-pg-brand]{font-size:17px;letter-spacing:.03em;background:linear-gradient(92deg,#f472b6,#a855f7 45%,#60a5fa);-webkit-background-clip:text;background-clip:text;color:transparent;}
+[data-pg-buildchip]{font-size:11px;font-weight:600;line-height:1;padding:4px 7px;border-radius:999px;cursor:pointer;color:#0369a1;background:#e0f2fe;border:1px solid #7dd3fc;}
+[data-pg-buildchip]:hover{background:#bae6fd;}
+[data-pg-theme="dark"] [data-pg-buildchip]{color:#bfe9ff;background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.5);}
 /* 顶栏三件套（预设 / 严格度 / 立马跑一轮）统一规格：同高 30、同圆角、同字号、文字垂直居中 */
 [data-pg-pill]{display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 6px 0 13px;border-radius:999px;background:rgba(127,127,127,.10);line-height:1;vertical-align:middle;border:1px solid rgba(127,127,127,.20);box-sizing:border-box;}
 /* 药丸下拉（0.7.39）：label 与值都是纯文本，行高一致，永远同一基线 */
@@ -6164,6 +6221,11 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         h('div', { 'data-pg-head': '' },
           h('div', {},
             h('div', { 'data-pg-brand': '' }, 'Pixiv 知心画廊'),
+        h('button', {
+          'data-pg-buildchip': '',
+          title: '当前界面版本（点一下整页重取）',
+          onClick: () => pgReload(),
+        }, 'v' + CLIENT_BUILD),
             h('div', { 'data-pg-sub': '' }, `轮次 ${rounds?.length ?? '…'} · 作品库 ${libCount} 件`)),
           h('div', { 'data-pg-grow': '' }),
           h('div', { 'data-pg-tabs': '' },
@@ -10077,7 +10139,12 @@ function GalleryTab2({ onScopeChanged }) {
         const tone = t === 'warn' ? 'warn' : t === 'page' ? 'page' : 'good'
         if (!toastOnly) { setMsg(s); setTone(t === 'page' ? '' : (t || '')) }
         if (s) setToast({ id: ++toastSeq.current, text: s, tone, holdMs: Number(holdMs) || 0 })
-      }
+      }      /* 刚整页重取过：等首屏那几条 say 落定再说，否则会被它们顶掉 */
+      React.useEffect(() => {
+        if (!pgJustReloaded) return undefined
+        const t = setTimeout(() => { try { say('当前版本号 ' + CLIENT_BUILD + '，改动已加载', 'good', 6000, true) } catch { /* ignore */ } }, 800)
+        return () => clearTimeout(t)
+      }, [])
       const loadRounds = React.useCallback(async () => {
         try {
           const r = await api('/rounds')
@@ -10452,6 +10519,11 @@ function GalleryTab2({ onScopeChanged }) {
           h('div', {},
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
               h('div', { 'data-pg-brand': '' }, 'Pixiv 知心画廊'),
+        h('button', {
+          'data-pg-buildchip': '',
+          title: '当前界面版本（点一下整页重取）',
+          onClick: () => pgReload(),
+        }, 'v' + CLIENT_BUILD),
               (() => {
                 const st = String(lat?.state || 'idle')
                 const ok = st === 'ok'
