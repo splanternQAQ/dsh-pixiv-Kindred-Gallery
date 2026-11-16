@@ -145,7 +145,7 @@ window.__ModuleLoader__.load({
       const install = async () => {
         setInstalling(true); setErr('')
         try {
-          const r = await api('/update/install', {})
+          const r = await api('/update/install', data?.force ? { force: true } : {})
           if (!r.ok) throw new Error(r.error || '安装失败')
           setDone(r)
         } catch (e) {
@@ -157,10 +157,10 @@ window.__ModuleLoader__.load({
       const autoRef = React.useRef(false)
       React.useEffect(() => {
         if (autoRef.current) return
-        if (!data?.autoInstall || done || installing || !info?.update) return
+        if (!data?.autoInstall || done || installing || (!info?.update && !data?.force)) return
         autoRef.current = true
         install()
-      }, [data?.autoInstall, installing, done, info?.update])
+      }, [data?.autoInstall, data?.force, installing, done, info?.update])
       const notesTitle = info?.noteSource === 'README' ? '这一版改了什么（README 更新日志）'
         : info?.noteSource === 'commit' ? '最新提交说明' : '更新内容'
       return h('div', { 'data-pg-modal': '', style: { zIndex: 420 }, onClick: onClose },
@@ -185,7 +185,7 @@ window.__ModuleLoader__.load({
           h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginTop: '10px' } },
             h('span', { style: { fontSize: '15px', color: '#94a3b8' } }, `当前 ${info.version || ''}`),
             h('span', { style: { fontSize: '19px', fontWeight: 900, color: info.update ? '#fbbf24' : '#86efac' } },
-              info.update ? `→ ${info.latest}` : `已是最新（${info.latest || info.version}）`)),
+              info.update ? `→ ${info.latest}` : (data?.force ? '重装仓库最新代码' : `已是最新（${info.latest || info.version}）`))),
           h('div', { 'data-pg-note2': '', style: { marginTop: '8px', lineHeight: 1.7 } },
             `更新时间：${fmtTime(info.updatedAt)}`, info.sha ? `｜最新提交 ${info.sha}` : '',
             h('br'),
@@ -207,10 +207,11 @@ window.__ModuleLoader__.load({
             h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose, disabled: installing }, '关闭'),
             h('button', {
               'data-pg-btn': '', 'data-primary': '', type: 'button',
-              disabled: installing || !info.update,
-              title: info.update ? '下载最新源码覆盖当前插件，做完要重启 DSH' : '已经是最新版本',
+              disabled: installing || (!info.update && !data?.force),
+              title: info.update ? '下载最新源码覆盖当前插件，做完要重启 DSH'
+                : data?.force ? '版本号相同，但会拉仓库当前代码覆盖（修同版本 bug 用）' : '已经是最新版本',
               onClick: install,
-            }, installing ? '正在下载…' : info.update ? `安装 ${info.latest}` : '已是最新'))) : null,
+            }, installing ? '正在下载…' : info.update ? `安装 ${info.latest}` : data?.force ? '重装最新源码' : '已是最新'))) : null,
 
         data?.error ? h('div', null,
           h('div', { 'data-pg-note2': '', style: { color: '#f87171', marginTop: '10px', whiteSpace: 'pre-wrap' } }, `检查失败：${data.error}`),
@@ -7285,8 +7286,8 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           if (!r.ok) throw new Error(r.error || '检查更新失败')
           setStars(Number(r.stars) || 0)
           setVersion(String(r.version || version))
-          setUpdateMsg(r.update ? `发现新版本 ${r.latest}` : '已是最新')
-          setUpd({ info: r, autoInstall: !!opts.autoInstall && !!r.update })
+          setUpdateMsg(r.update ? `发现新版本 ${r.latest}` : (opts.force ? '版本号相同，正在重装仓库最新代码' : '已是最新'))
+          setUpd({ info: r, autoInstall: !!opts.autoInstall && (!!r.update || !!opts.force), force: !!opts.force })
         } catch (e) {
           setUpdateMsg(String(e?.message ?? e))
           setUpd({ error: String(e?.message ?? e) })
@@ -8610,7 +8611,14 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             h('span', { className: 'pg-star-r' },
               stars === null ? '—' : (stars >= 1000 ? `${(stars / 1000).toFixed(stars >= 10000 ? 0 : 1).replace(/\.0$/, '')}k` : String(stars)))),
             h('button', { ref: updBtnRef, 'data-pg-btn': '', 'data-pg-updfocus': updPulse ? '' : undefined, disabled: busy === 'update', onClick: () => checkUpdate() }, busy === 'update' ? '检查中…' : '检查更新'),
+            h('button', {
+              'data-pg-btn': '', type: 'button', disabled: busy === 'update',
+              title: '版本号相同也照样重装仓库最新代码；装完要重启 DSH',
+              onClick: () => checkUpdate({ autoInstall: true, force: true }),
+            }, '重装最新版'),
             updateMsg ? h('span', { 'data-pg-note2': '' }, updateMsg) : null),
+          h('div', { 'data-pg-note2': '', style: { marginTop: '6px', lineHeight: 1.8 } },
+            '提示：部分同版本的 bug（比如界面整块空白）只看版本号发现不了，点「重装最新版」会直接拉仓库当前代码覆盖，装完重启 DSH 就修好了。'),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             h('a', { href: 'https://space.bilibili.com/1620499208?spm_id_from=333.1387.0.0', target: '_blank', rel: 'noreferrer', 'data-pg-link': '', 'data-bili': '' }, '▶ B站'),
             h('a', { href: 'https://github.com/splanternQAQ', target: '_blank', rel: 'noreferrer', 'data-pg-link': '', 'data-github': '' }, '◉ GitHub')),

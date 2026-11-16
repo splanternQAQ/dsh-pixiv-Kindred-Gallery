@@ -184,7 +184,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.2.9'
+const GALLERY_VERSION = '1.3.0'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 
 function bad(status, error, extra = {}) {
@@ -2462,6 +2462,8 @@ const routes = {
         const t = ghTarget()
         if (!t) return bad(400, '项目地址不是 GitHub 仓库')
         const dryRun = Boolean(body?.dryRun)
+        /* force：版本号没变也要重装仓库最新代码 —— 修好同版本 bug 后，用户靠这一手补上 */
+        const force = Boolean(body?.force)
         const srcDir = dirname(fileURLToPath(import.meta.url))
         let remoteVersion = ''
         let branch = String(body?.branch || 'main')
@@ -2473,7 +2475,7 @@ const routes = {
         } catch (e) {
           if (!dryRun) return bad(502, `读取远程版本失败：${String(e?.message ?? e).slice(0, 160)}`)
         }
-        if (!dryRun && remoteVersion && cmpVer(remoteVersion, GALLERY_VERSION) <= 0) {
+        if (!dryRun && !force && remoteVersion && cmpVer(remoteVersion, GALLERY_VERSION) <= 0) {
           return bad(409, `已经是最新版本（${GALLERY_VERSION}）`)
         }
         const root = mkdtempSync(join(tmpdir(), 'gallery-upd-'))

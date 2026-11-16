@@ -46,12 +46,29 @@ $srcDir = (Get-ChildItem $tmp -Directory | Where-Object { $_.Name -like "$zipPre
 if (-not $srcDir) { throw '解压后找不到源码目录' }
 
 Write-Host "==> 安装到 $dest" -ForegroundColor Cyan
+$bak = $null
 if (Test-Path $dest) {
   $bak = $dest + '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
   Move-Item $dest $bak
   Write-Host "   旧版本已备份到 $bak"
 }
 Move-Item $srcDir $dest
+
+# 数据保险：画廊的数据本来就在 profile 家目录里（下面那行会打印路径），重装不碰它；
+# 但早期版本如果把数据放在插件目录里，这里把数据文件原样搬回新目录，免得看起来“数据丢了”。
+if ($bak -and (Test-Path $bak)) {
+  foreach ($n in @('gallery.json', 'preferences.json', 'prefs-auto.json', 'gallery.log')) {
+    $from = Join-Path $bak $n
+    if (Test-Path $from) { Copy-Item $from (Join-Path $dest $n) -Force; Write-Host "   已带回过数据文件：$n" }
+  }
+  foreach ($d in @('picks', 'thumbs', 'backups')) {
+    $fromDir = Join-Path $bak $d
+    if (Test-Path $fromDir) { Copy-Item $fromDir (Join-Path $dest $d) -Recurse -Force; Write-Host "   已带回过数据目录：$d" }
+  }
+}
+$dataHome = Join-Path $env:USERPROFILE '.dsh\dsh-pixiv-Kindred-Gallery'
+Write-Host "   您的画廊数据（评分 / 偏好 / 缩略图 / 轮次）在：$dataHome" -ForegroundColor DarkGray
+Write-Host "   重装只覆盖插件代码目录，不会删改上面这个目录。" -ForegroundColor DarkGray
 
 Write-Host '==> 注册到 profile' -ForegroundColor Cyan
 $pkgPath = Join-Path $profileDir 'package.json'
