@@ -169,7 +169,7 @@ import { buildTaste } from './lib/taste.mjs'
 import { analyzeStyleProfile, sanitizeTasteStyle } from './lib/vision.mjs'
 import { allPresets, activePreset, savePreset, deletePreset, presetToScrollPatch, normalizePreset } from './lib/presets.mjs'
 import { pageImage, pageImageFull, workMeta, authorLatest, prunePageCache, setCredentialSource, ensureUgoiraFrames, ensureUgoiraAnim, localUgoiraFrames, isUgoira, ugoiraFrame, setZipTool, thumbImage, pixivHeaders } from './lib/pixivpages.mjs'
-import { proxiedRequest, proxiedGet, proxiedJson, netStats, detectProxy, currentRoute, routeReport } from './lib/net.mjs'
+import { proxiedRequest, proxiedGet, proxiedJson, netStats, detectProxy, currentRoute, routeReport, imageDirectStats, setDirectImageLogger, setDirectImageEnabled, isDirectImageEnabled } from './lib/net.mjs'
 import { ensureThumb } from './lib/thumbs.mjs'
 import {
   GALLERY_WORKSPACE_NAME, GALLERY_WORKSPACE_TITLE, GALLERY_WORKSPACE_LEGACY,
@@ -187,8 +187,10 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.5.0'
+const GALLERY_VERSION = '1.5.5'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
+/* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
+const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 
 function bad(status, error, extra = {}) {
   return { status, body: { ok: false, error, ...extra } }
@@ -226,9 +228,69 @@ function extOfImage(dir, preferred = '') {
   return files.length ? join(dir, files[0]) : ''
 }
 
+/** 检索面板的背景图清单（随插件分发，出处一并带上；客户端 /bg/list 直接读） */
+const LOOKUP_BG_META = [
+  {
+    "id": "b1",
+    "name": "血战之后",
+    "credit": "B 站 · BV1Qwx56bEig",
+    "href": "https://www.bilibili.com/video/BV1Qwx56bEig",
+    "tone": "photo"
+  },
+  {
+    "id": "b2",
+    "name": "祀 · 明日方舟：终末地",
+    "credit": "pixiv · 默椏_Myoasis",
+    "href": "https://www.pixiv.net/artworks/147773196",
+    "tone": "anime"
+  },
+  {
+    "id": "b3",
+    "name": "雏鸟组 · 碧蓝档案",
+    "credit": "pixiv · sseopik（鷹野主スイコ / 烏頭尾ヨウコ / 五百雀ナゴミ）",
+    "href": "https://www.pixiv.net/artworks/146534323",
+    "tone": "anime"
+  },
+  {
+    "id": "b4",
+    "name": "森亚露露卡 · 名探偵プリキュア！",
+    "credit": "pixiv · なかつしずる",
+    "href": "https://www.pixiv.net/artworks/144604820",
+    "tone": "anime"
+  },
+  {
+    "id": "b5",
+    "name": "佩尔西亚 · 寄宿学校的朱丽叶",
+    "credit": "pixiv · なっぱ",
+    "href": "https://www.pixiv.net/artworks/80686389",
+    "tone": "anime"
+  },
+  {
+    "id": "b6",
+    "name": "洛茜 · 明日方舟：终末地",
+    "credit": "pixiv · void_0",
+    "href": "https://www.pixiv.net/artworks/145973695",
+    "tone": "anime"
+  }
+]
+
+/** 自定义背景的落盘位置：<galleryHome>/backgrounds/custom.<ext> */
+function lookupCustomBg(home) {
+  const dir = join(home, 'backgrounds')
+  for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
+    const f = join(dir, 'custom.' + ext)
+    if (existsSync(f)) return f
+  }
+  return ''
+}
+
 function sendFile(file) {
   try {
-    return { status: 200, body: readFileSync(file), type: fileMime(file), cache: 'no-cache' }
+    const st = statSync(file)
+    /* 缩略图/动图/原图都是按内容寻址的落盘文件：给 ETag + 长缓存，来回翻页不再重复下载，
+       文件被重新渲染后 mtime/size 变了，ETag 跟着变，浏览器最多等一天就会换。 */
+    const etag = '"' + st.size.toString(16) + '-' + Math.round(st.mtimeMs).toString(16) + '"'
+    return { status: 200, body: readFileSync(file), type: fileMime(file), cache: 'public, max-age=86400', headers: { etag } }
   } catch {
     return { status: 404, body: Buffer.alloc(0), type: 'text/plain' }
   }
@@ -251,8 +313,63 @@ function makeApi(deps) {
   const cfgFile = join(home, 'gallery.json')
 
   const load = () => stateRef.state
+  /* 设置页/主界面开场会连着 GET /config 好几次，原来每次都全盘扫一遍作品目录（1.5GB，2 秒级），
+     串起来就是首屏卡顿。这里把「作品库 + 占用字节 + 作品数」压成一个 4 秒的短缓存，
+     任何写盘（save）都会让它立即失效。 */
+  let rtBits = { at: 0, lib: null, bytes: 0, count: 0 }
+  /* 磁盘占用（作品目录 1.5GB 递归 stat）跑一次是秒级。上次跑出来的值落盘存一份，
+     下次启动先用它，再在后台刷新——首屏不再等全盘扫描。 */
+  const diskStampFile = join(home, 'disk-usage.json')
+  let diskBytesWarm = (() => {
+    try {
+      const j = readJson(diskStampFile, null)
+      const at = Number(j && j.at)
+      const b = Number(j && j.worksBytes)
+      if (Number.isFinite(at) && Number.isFinite(b) && Date.now() - at < 6 * 3600 * 1000) return b
+    } catch { /* 没存过 */ }
+    return -1
+  })()
+  let diskRefreshAt = 0
+  const refreshDiskBytes = (async_bg = true) => {
+    const run = () => {
+      try {
+        const d = galleryDiskUsage(pixiv, { force: true })
+        const b = Number(d && d.worksBytes)
+        if (Number.isFinite(b) && b >= 0) {
+          diskBytesWarm = b
+          try { writeJson(diskStampFile, { worksBytes: b, at: Date.now() }) } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
+    if (async_bg) { try { setImmediate(run) } catch { run() } } else run()
+  }
+  const runtimeBits = () => {
+    const now = Date.now()
+    if (rtBits.lib && now - rtBits.at < 4000) return rtBits
+    const lib = markUgoira(listLibraryCached(pixiv, load(), { extraRoot: join(home, 'Download') }))
+    let bytes = diskBytesWarm >= 0 ? diskBytesWarm : 0
+    {
+      const now2 = Date.now()
+      if (diskBytesWarm < 0) {
+        /* 第一次用（或缓存过期太久）：同步算一次，后面都走缓存 */
+        try { bytes = Number(galleryDiskUsage(pixiv)?.worksBytes) || 0 } catch { bytes = 0 }
+        diskBytesWarm = bytes
+        diskRefreshAt = now2
+        try { writeJson(diskStampFile, { worksBytes: bytes, at: now2 }) } catch { /* ignore */ }
+      } else if (now2 - diskRefreshAt > 10 * 60 * 1000) {
+        /* 有旧值就先用旧值，后台悄悄刷新，不占这次请求的时间 */
+        diskRefreshAt = now2
+        refreshDiskBytes(true)
+      }
+    }
+    let count = 0
+    try { count = workCountOf(pixiv) } catch { /* ignore */ }
+    rtBits = { at: now, lib, bytes, count }
+    return rtBits
+  }
+  const dropRuntimeBits = () => { rtBits = { at: 0, lib: null, bytes: 0, count: 0 } }
   // 任何写盘都让 /library 的 8 秒缓存失效，否则刚建/刚加入的收藏夹在作品库里要等 8 秒才出现
-  const save = () => { stateRef.state = saveState(home, stateRef.state); resetLibraryCache(); return stateRef.state }
+  const save = () => { stateRef.state = saveState(home, stateRef.state); resetLibraryCache(); dropRuntimeBits(); return stateRef.state }
   // 全局去重迁移：把历史轮次 / 作品目录里出现过的作品 id 补进 collectedIds（只做一次，之后增量维护）
   try {
     const seeded = seedCollectedIds(pixiv, stateRef.state)
@@ -2467,6 +2584,79 @@ const PACK_TTL_MS = 3600 * 1000
     return res
   }
 
+/* ── 画廊检索「先收录缩略图」：作品立刻进作品库/收藏夹，原图等分数达标再下 ── */
+const QUICK_ROUND = 'quick'
+function quickWorkName(item) {
+  const t = String(item?.title || item?.id || '').trim()
+  const a = String(item?.artistId || '').trim()
+  return safeName(((a ? a + '_' : '') + t + '_' + String(item?.id || '')), 120) || ('work_' + String(item?.id || ''))
+}
+
+/** 后台把一件作品的**原图**下载下来，并把「缩略图占位」换成真实目录 */
+/** quick 作品下载成功后转正：分数、收藏夹、旧虚拟名一并搬到真实目录名 */
+function absorbQuickWork(st, wid, name) {
+  const qw = st.quickWorks ? st.quickWorks[wid] : null
+  if (!qw) return
+  const sc = Number.isFinite(Number(qw.score)) ? Number(qw.score) : null
+  delete st.quickWorks[wid]
+  if (sc !== null) st.library[name] = { ...(st.library[name] || {}), score: sc, updatedAt: new Date().toISOString() }
+  if (st.quickScores && st.quickScores[wid]) st.library[name] = { ...(st.library[name] || {}), score: Number(st.quickScores[wid].score), updatedAt: new Date().toISOString() }
+  if (qw.collection) { try { collectionAdd(st, qw.collection, [name]) } catch { /* ignore */ } }
+  if (qw.name && qw.name !== name) {
+    const moved = st.library[qw.name]
+    if (moved) { st.library[name] = { ...moved, ...(st.library[name] || {}) }; delete st.library[qw.name] }
+    if (st.libraryAdded[qw.name]) delete st.libraryAdded[qw.name]
+    for (const c of Object.values(st.collections || {})) {
+      if (c && Array.isArray(c.works)) c.works = c.works.filter((n) => n !== qw.name)
+    }
+  }
+}
+
+function queueQuickDownload(id) {
+  const wid = String(id || '').replace(/\D/g, '')
+  if (!wid) return false
+  setTimeout(async () => {
+    const job = dlJob(wid)
+    job.state = 'run'; job.done = 0; job.total = 1; job.at = Date.now()
+    try {
+      const st2 = load()
+      const r = await downloadWork(home, { id: wid, round: QUICK_ROUND }, {
+        root: guessRoot(home, st2.config.downloadRoot),
+        dirTemplate: String(st2.config.dirTemplate),
+        fileTemplate: String(st2.config.fileNameTemplate),
+        maxPages: st2.config.maxPages,
+        onProgress: ({ done, total }) => { job.done = done; job.total = Math.max(1, total); job.at = Date.now() },
+      })
+      job.state = 'done'; job.done = job.total; job.at = Date.now()
+      dlFail.delete(wid)
+      const st3 = load()
+      const name = String(r.dir || '').split(/[\\/]/).pop()
+      st3.libraryAdded = st3.libraryAdded || {}
+      st3.libraryAdded[name] = { at: new Date().toISOString(), round: QUICK_ROUND, id: wid }
+      markCollected(st3, [wid], { round: QUICK_ROUND })
+      absorbQuickWork(st3, wid, name)
+      save()
+      try { resetLibraryCache() } catch { /* ignore */ }
+      log('画廊检索自动下载完成：' + name + '（' + r.pages + ' 页）')
+    } catch (e) {
+      const msg = String(e?.message ?? e).slice(0, 140)
+      job.state = 'fail'; job.error = msg; job.at = Date.now()
+      dlFail.set(wid, { at: Date.now(), msg })
+      log('画廊检索自动下载失败（' + wid + '）：' + msg)
+    }
+  }, 10)
+  return true
+}
+
+/** 分数够就排一次原图下载；已下载 / 关了自动下载就跳过 */
+function maybeQueueQuickDownload(id, score) {
+  const cf = load().config || {}
+  const min = Number(cf.autoDownloadMinScore ?? 9)
+  if (cf.autoDownload === false) return false
+  if (!Number.isFinite(Number(score)) || Number(score) < min) return false
+  if (isDownloaded(String(id))) return false
+  return queueQuickDownload(id)
+}
 const routes = {
     '/follow': {
       methods: ['POST'],
@@ -2516,7 +2706,9 @@ const routes = {
       methods: ['GET'],
       handler: async () => {
         const r = await probeNetwork()
-        return r.ok ? ok(r) : { status: 200, body: { ok: false, ...r } }
+        /* 图片直连旁路的计数一起带出去：界面/日志里能看出它到底被用过没有 */
+        const imageDirect = { ...imageDirectStats, enabled: isDirectImageEnabled() }
+        return r.ok ? ok({ ...r, imageDirect }) : { status: 200, body: { ok: false, ...r, imageDirect } }
       },
     },
     '/latency': {
@@ -2985,6 +3177,7 @@ const routes = {
         const st = summary(pixiv, stateForSweep)
         return ok({
           ...st,
+          bootId: BOOT_ID,
           version: GALLERY_VERSION,
           pixivHome: pixiv,
           galleryHome: home,
@@ -3063,6 +3256,8 @@ const routes = {
       methods: ['GET', 'POST'],
       handler: (q, body) => {
         const state = load()
+        /* 读写设置时同步一次「图片直连兜底」开关，别让进程里跑旧状态 */
+        try { setDirectImageEnabled(state?.config?.imageDirect !== false) } catch { /* ignore */ }
         try { normalizeFavoriteTags(state) } catch { /* ignore */ }
         const pcfg = readJson(join(pixiv, 'config.json'), {})
         const pixivDepInfo = (() => {
@@ -3072,10 +3267,11 @@ const routes = {
           return { home: pixiv, configExists, credentialExists, authState, pluginDir: pixivScrollDir(), pluginInstalled: pixivPluginLoaded(), ok: configExists && credentialExists && authState === 'ok', repo: 'https://github.com/kuroshio4396/dafayu-pixiv-duty' }
         })()
         const withRuntime = () => {
-          const lib = markUgoira(listLibraryCached(pixiv, state, { extraRoot: join(home, 'Download') }))
+          const bits = runtimeBits()
+          const lib = bits.lib
           const worksRoot = worksRootOf(pixiv)
-          const diskWorkCount = workCountOf(pixiv)
-          const cacheBytes = (() => { try { return dirBytes(worksRoot) } catch { return 0 } })()
+          const diskWorkCount = bits.count
+          const cacheBytes = bits.bytes
           let diskFree = 0
           try { const s = statfsSync(saveRootOf(pixiv)); diskFree = Number(s.bavail) * Number(s.bsize) } catch { /* ignore */ }
           return {
@@ -3128,8 +3324,16 @@ const routes = {
         if (typeof body.showInAllWorkspaces === 'boolean') state.config.showInAllWorkspaces = body.showInAllWorkspaces
         if (body.projectUrl !== undefined) state.config.projectUrl = String(body.projectUrl || '').trim().slice(0, 500)
         if (body.uiTheme !== undefined) state.config.uiTheme = (String(body.uiTheme) === 'light' ? 'light' : 'dark')
+        if (typeof body.lookupBg === 'string') {
+          const v = body.lookupBg
+          if (v === 'random' || v === 'none' || v === 'custom' || /^b\d+$/.test(v)) state.config.lookupBg = v
+        }
         if (typeof body.autoAddRated === 'boolean') state.config.autoAddRated = body.autoAddRated
         if (typeof body.autoDownload === 'boolean') state.config.autoDownload = body.autoDownload
+        if (typeof body.imageDirect === 'boolean') {
+          state.config.imageDirect = body.imageDirect
+          try { setDirectImageEnabled(body.imageDirect) } catch { /* ignore */ }
+        }
         if (body.roundScoring && typeof body.roundScoring === 'object') {
           state.config.roundScoring = { enabled: body.roundScoring.enabled === true }
         }
@@ -3236,7 +3440,9 @@ const routes = {
           const next = { ...src }
           for (const k of ['6', '7', '8', '9', '10']) {
             const v = String(body.scoreLabelColors[k] ?? '').trim()
-            if (/^#[0-9a-f]{6}$/i.test(v)) next[k] = v.toLowerCase()
+            /* 10 分允许 'rainbow'：前端走彩虹渐变字 + 渐变描边（其它档位仍然只认十六进制） */
+            if (k === '10' && v.toLowerCase() === 'rainbow') next[k] = 'rainbow'
+            else if (/^#[0-9a-f]{6}$/i.test(v)) next[k] = v.toLowerCase()
           }
           state.config.scoreLabelColors = next
         }
@@ -3837,8 +4043,22 @@ const routes = {
         const id = String(body?.id || '').trim()
         if (!round || !id) return bad(400, '缺少 round/id')
         const rd = loadRound(pixiv, round)
-        const it = (rd.items || []).find((x) => String(x?.id) === id)
-        if (!it) return bad(404, '这一轮里没有这个作品')
+        let it = (rd.items || []).find((x) => String(x?.id) === id)
+        /* 检索页收录的作品不在任何轮次的候选清单里，退回 quickWorks 存的元数据 */
+        if (!it) {
+          const qm = (st.quickWorks || {})[id]
+          if (!qm) return bad(404, '这一轮里没有这个作品')
+          it = {
+            id,
+            title: qm.title || '',
+            artist: qm.artist || '',
+            artistId: qm.artistId || '',
+            pages: Number(qm.pages) || 1,
+            rating: qm.rating || '',
+            xRestrict: qm.xRestrict || 0,
+            tags: Array.isArray(qm.tags) ? qm.tags : [],
+          }
+        }
         const preset = body?.preset && typeof body.preset === 'object' ? body.preset : null
         const root = guessRoot(home, preset?.downloadRoot || st.config.downloadRoot)
         const totalPages = Math.max(1, Number(it.pages) || 1)
@@ -3858,8 +4078,10 @@ const routes = {
             onProgress: ({ done, total }) => { job.done = done; job.total = Math.max(1, total); job.at = Date.now() },
           })
           job.state = 'done'; job.done = job.total; job.at = Date.now()
-          st.libraryAdded[r.dir.split(/[\\/]/).pop()] = { at: new Date().toISOString(), round, id }
+          const realName = r.dir.split(/[\\/]/).pop()
+          st.libraryAdded[realName] = { at: new Date().toISOString(), round, id }
           markCollected(st, [id], { round })
+          try { absorbQuickWork(st, id, realName) } catch { /* 迁移失败不影响下载结果 */ }
           save()
           try {
             const file = join(rd.dir, 'candidates.json')
@@ -4783,6 +5005,34 @@ const routes = {
       },
     },
 
+    /** 只在本地已有的缩略图里找（不联网、也不补下）：检索历史靠它判断「这件当时有没有下载缩略图」 */
+    '/thumb/local': {
+      methods: ['GET'],
+      handler: (q) => {
+        const id = String(q.get('id') || '').trim()
+        if (!/^\d{1,12}$/.test(id)) return bad(400, 'id 不合法')
+        const w = bodyInt(q.get('w'), 180)
+        try {
+          const dir = findDirById(id)
+          const files = dir ? imageFilesOfWork(dir) : []
+          if (files.length) {
+            const f = join(dir, files[0])
+            if (existsSync(f)) return serveThumb(f, w)
+          }
+          const root = picksRootOf(pixiv)
+          const quick = join(root, QUICK_ROUND, 'thumbs', id + '.jpg')
+          if (existsSync(quick)) return serveThumb(quick, w)
+          let rounds = []
+          try { rounds = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name) } catch { rounds = [] }
+          for (const r of rounds) {
+            const f = join(root, r, 'thumbs', id + '.jpg')
+            if (existsSync(f)) return serveThumb(f, w)
+          }
+        } catch { /* ignore */ }
+        return { status: 404, body: Buffer.alloc(0), type: 'text/plain' }
+      },
+    },
+
     /** 交流群二维码（随插件分发的静态图，不用联网） */
     '/qq-group-qr': {
       methods: ['GET'],
@@ -4790,6 +5040,76 @@ const routes = {
         const f = join(PLUGIN_DIR, 'assets', 'qq-group.jpg')
         if (!existsSync(f)) return bad(404, '没有找到群二维码图片')
         return sendFile(f)
+      },
+    },
+
+
+    /** 检索面板背景：清单 + 当前选择 */
+    '/bg/list': {
+      methods: ['GET'],
+      handler: () => {
+        let current = 'random'
+        try {
+          const v = String(load().config?.lookupBg || 'random')
+          if (v === 'none' || v === 'random' || v === 'custom' || /^b\d+$/.test(v)) current = v
+        } catch { /* 配置读不出来就按随机 */ }
+        return ok({ items: LOOKUP_BG_META, current, custom: Boolean(lookupCustomBg(home)) })
+      },
+    },
+
+    /** 内置背景原图（b1..b6 随插件分发） */
+    '/bg/file': {
+      methods: ['GET'],
+      handler: (q) => {
+        const id = String(q?.get?.('id') || '').replace(/[^a-z0-9]/gi, '')
+        if (!LOOKUP_BG_META.some((x) => x.id === id)) return bad(404, '没有这张背景图')
+        const f = join(PLUGIN_DIR, 'assets', 'backgrounds', id + '.jpg')
+        if (!existsSync(f)) return bad(404, '背景图文件不见了')
+        return sendFile(f)
+      },
+    },
+
+    /** 自己上传的背景（存在画廊数据目录里，重装插件也不丢） */
+    '/bg/custom': {
+      methods: ['GET'],
+      handler: () => {
+        const f = lookupCustomBg(home)
+        if (!f) return bad(404, '还没有自定义背景')
+        return { ...sendFile(f), cache: 'no-cache' }
+      },
+    },
+
+    '/bg/upload': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const data = String(body?.data || '')
+        if (!data) return bad(400, '没有收到图片数据')
+        let buf
+        try { buf = Buffer.from(data, 'base64') } catch { return bad(400, '数据不是合法的 base64') }
+        if (!buf.length) return bad(400, '图片是空的')
+        if (buf.length > 12 * 1024 * 1024) return bad(400, '图片太大（上限 12MB，建议先压到 1600px 宽）')
+        const head = buf.subarray(0, 12)
+        let ext = ''
+        if (head[0] === 0xff && head[1] === 0xd8) ext = 'jpg'
+        else if (head[0] === 0x89 && head[1] === 0x50) ext = 'png'
+        else if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') ext = 'webp'
+        if (!ext) return bad(400, '只支持 jpg / png / webp')
+        const dir = join(home, 'backgrounds')
+        mkdirSync(dir, { recursive: true })
+        for (const old of ['jpg', 'jpeg', 'png', 'webp']) {
+          const f = join(dir, 'custom.' + old)
+          if (existsSync(f)) { try { rmSync(f, { force: true }) } catch { /* 删不掉就让新文件顶上 */ } }
+        }
+        const file = join(dir, 'custom.' + ext)
+        writeFileSync(file, buf)
+        try {
+          const st = load()
+          st.config = st.config || {}
+          st.config.lookupBg = 'custom'
+          save()
+        } catch { /* 配置写不进去也不影响图片已落盘 */ }
+        log('检索画廊背景已换成自定义图（' + (buf.length / 1024).toFixed(0) + ' KB）')
+        return ok({ current: 'custom', bytes: buf.length, ext })
       },
     },
 
@@ -5050,6 +5370,53 @@ const routes = {
     },
 
     /** 检索：pid / 作品网址 / 收藏集网址 / 关键词，都从这一个口进 */
+    /** 检索结果用：这件作品在不在作品库 / 卡片里，当前多少分、在哪些收藏夹。 */
+    '/work/where': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const ids = [...new Set((Array.isArray(body?.ids) ? body.ids : [])
+          .map((x) => String(x ?? '').replace(/\D/g, '')).filter(Boolean))].slice(0, 60)
+        if (!ids.length) return ok({ items: [] })
+        const st = load()
+        const lib = listLibraryCached(pixiv, st, { extraRoot: join(home, 'Download') })
+        const byId = new Map()
+        for (const w of (lib.works || [])) if (w && w.id) byId.set(String(w.id), w)
+        const cols = lib.collections || []
+        const cards = new Map()
+        const addCard = (round, id, score) => {
+          const kid = String(id || '').replace(/\D/g, '')
+          if (!kid) return
+          const list = cards.get(kid) || []
+          if (!list.some((x) => x.round === round)) list.push({ round, score: Number(score) || 0 })
+          cards.set(kid, list)
+        }
+        for (const [round, m] of Object.entries(st.works || {})) {
+          if (!m || typeof m !== 'object') continue
+          for (const [id, v] of Object.entries(m)) addCard(round, id, v && v.score)
+        }
+        for (const [round, m] of Object.entries(st.removedWorks || {})) {
+          if (!m || typeof m !== 'object') continue
+          for (const [id, v] of Object.entries(m)) addCard(round, id, v && v.score)
+        }
+        const items = ids.map((id) => {
+          const w = byId.get(id) || null
+          const name = w ? String(w.name || '') : ''
+          const inCols = name
+            ? cols.filter((c) => Array.isArray(c.works) && c.works.indexOf(name) >= 0).map((c) => String(c.display || c.name))
+            : []
+          return {
+            id,
+            library: Boolean(w),
+            name,
+            score: w ? (Number(w.userScore) || 0) : 0,
+            collections: inCols,
+            cards: (cards.get(id) || []).slice(0, 6),
+          }
+        })
+        return ok({ items })
+      },
+    },
+
     '/work/lookup': {
       methods: ['POST'],
       handler: async (q, body) => {
@@ -5115,6 +5482,109 @@ const routes = {
       },
     },
 
+    /** 画廊检索里直接打分（不必先收录）：分数进 quickScores，够了就顺手下原图 */
+    '/work/score': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const id = String(body?.id || '').replace(/\D/g, '')
+        if (!/^\d{3,12}$/.test(id)) return bad(400, '作品 id 不合法')
+        let score = null
+        try { score = scoreBody(body?.score) } catch (e) { return bad(400, String(e?.message ?? e)) }
+        const st = load()
+        st.quickScores = st.quickScores || {}
+        if (score === null) delete st.quickScores[id]
+        else {
+          st.quickScores[id] = { score, at: new Date().toISOString() }
+          st.rateLog = Array.isArray(st.rateLog) ? st.rateLog : []
+          st.rateLog.push({ id, score: Number(score), tags: [], at: Date.now() })
+          if (st.rateLog.length > 800) st.rateLog = st.rateLog.slice(-800)
+        }
+        const qw = st.quickWorks ? st.quickWorks[id] : null
+        if (qw) {
+          qw.score = score
+          if (qw.name) st.library[qw.name] = { ...(st.library[qw.name] || {}), score, updatedAt: new Date().toISOString() }
+        }
+        save()
+        feedback()
+        try { resetLibraryCache() } catch { /* ignore */ }
+        const autoDownload = score === null ? false : maybeQueueQuickDownload(id, score)
+        return ok({ id, score, autoDownload, collected: Boolean(qw) })
+      },
+    },
+
+    /** 画廊检索「收进来」：先建缩略图占位（作品立刻出现在作品库/收藏夹），原图交给自动下载 */
+    '/work/collect-quick': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const raw = Array.isArray(body?.items) ? body.items : []
+        const items = raw.map((x) => ({
+          id: String((x && x.id) || '').replace(/\D/g, ''),
+          title: String((x && x.title) || '').slice(0, 200),
+          artist: String((x && x.artist) || '').slice(0, 120),
+          artistId: String((x && x.artistId) || '').replace(/\D/g, ''),
+          pages: Math.max(1, bodyInt(x && x.pages, 1)),
+          rating: String((x && x.rating) || 'all'),
+          xRestrict: bodyInt(x && x.xRestrict, 0),
+          tags: Array.isArray(x && x.tags) ? x.tags.map(String).slice(0, 30) : [],
+        })).filter((x) => /^\d{3,12}$/.test(x.id)).slice(0, 40)
+        if (!items.length) return bad(400, '没有合法的作品')
+        const st = load()
+        const wantCol = String(body?.collection || '').trim()
+        const target = wantCol
+        if (target && !(st.collections || {})[target]) collectionCreate(st, target)
+        const thumbDir = join(picksRootOf(pixiv), QUICK_ROUND, 'thumbs')
+        mkdirSync(thumbDir, { recursive: true })
+        const names = []
+        const cardItems = []
+        for (const it of items) {
+          const name = quickWorkName(it)
+          try {
+            const got = await thumbImage(home, it.id)
+            if (got && got.length) writeFileSync(join(thumbDir, it.id + '.jpg'), got)
+          } catch { /* 缩略图取不到也不挡收录 */ }
+          st.quickWorks = st.quickWorks || {}
+          const prev = st.quickWorks[it.id] || {}
+          st.quickWorks[it.id] = { ...prev, ...it, name, at: new Date().toISOString(), collection: target || '' }
+          const sc = Number.isFinite(Number(body?.score))
+            ? Number(body.score)
+            : (st.quickScores && st.quickScores[it.id] ? Number(st.quickScores[it.id].score) : null)
+          if (Number.isFinite(sc)) {
+            st.quickWorks[it.id].score = sc
+            st.library[name] = { ...(st.library[name] || {}), score: sc, updatedAt: new Date().toISOString() }
+          }
+          st.libraryAdded = st.libraryAdded || {}
+          st.libraryAdded[name] = { at: new Date().toISOString(), round: QUICK_ROUND, id: it.id, virtual: true, title: it.title }
+          markCollected(st, [it.id], { round: QUICK_ROUND })
+          if (target) collectionAdd(st, target, [name])
+          names.push(name)
+          cardItems.push({ ...it, status: 'saved', cover: 'thumbs/' + it.id + '.jpg', dir: '', round: QUICK_ROUND })
+        }
+        let round = ''
+        if (body?.newCard) {
+          const now = new Date()
+          const pad = (n) => String(n).padStart(2, '0')
+          round = 'custom-' + now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes()) + '-' + Math.random().toString(36).slice(2, 7)
+          const roundDir = join(picksRootOf(pixiv), round)
+          mkdirSync(join(roundDir, 'thumbs'), { recursive: true })
+          for (const it of items) {
+            const src = join(picksRootOf(pixiv), QUICK_ROUND, 'thumbs', it.id + '.jpg')
+            try { if (existsSync(src)) copyFileSync(src, join(roundDir, 'thumbs', it.id + '.jpg')) } catch { /* ignore */ }
+          }
+          const cardName = String(body?.cardName || '').trim().slice(0, 60)
+          writeJson(join(roundDir, 'candidates.json'), {
+            createdAt: new Date().toISOString(),
+            preset: cardName || '自己挑的',
+            note: '从「画廊检索」手动收进来的（先存缩略图，原图等自动下载）',
+            items: cardItems.map((x) => ({ ...x, round })),
+            pushMode: false,
+          })
+        }
+        save()
+        feedback()
+        try { resetLibraryCache() } catch { /* ignore */ }
+        return ok({ round, cardName: String(body?.cardName || ''), collection: target || '', saved: names.length, names })
+      },
+    },
     /** 一键收：下载 → 作品库 → 收藏夹 →（可选）新建一张自定义卡片 */
     '/work/quick-collect': {
       methods: ['POST'],
@@ -5242,12 +5712,22 @@ const routes = {
       handler: async (q) => {
         const id = String(q.get('id') || '').trim()
         if (!/^\d{1,12}$/.test(id)) return bad(400, '作品 id 不合法')
+        /* 整段 webp 已经在本地：直接用它，绝不再去解压帧（首次解压要下载 zip + 解压，6 秒级）。
+           帧表只从本地 meta.json 读，读不到就返回空表——前端见 anim 就不看帧。 */
+        try {
+          const animFile0 = join(home, 'ugoira', id, 'anim.webp')
+          if (existsSync(animFile0)) {
+            const local = localUgoiraFrames(home, id)
+            const fl = local ? local.frames.map((f, i) => ({ u: `/ugoira-frame?id=${id}&i=${i}`, delay: f.delay })) : []
+            return { status: 200, body: { ok: true, id, w: local?.w || 0, h: local?.h || 0, count: fl.length, frames: fl, anim: `/ugoira-anim?id=${id}`, cached: true }, type: 'application/json; charset=utf-8', cache: 'private, max-age=300' }
+          }
+        } catch { /* 本地缓存读不出来就走老路 */ }
         try {
           const m = await ensureUgoiraFrames(home, id)
           const frames = m.frames.map((f, i) => ({ u: `/ugoira-frame?id=${id}&i=${i}`, delay: f.delay }))
           const animFile = join(home, 'ugoira', id, 'anim.webp')
           const anim = existsSync(animFile) ? `/ugoira-anim?id=${id}` : ''
-          return { status: 200, body: { ok: true, id, w: m.w, h: m.h, count: frames.length, frames, anim, cached: Boolean(m.cached) }, type: 'application/json; charset=utf-8', cache: 'no-cache' }
+          return { status: 200, body: { ok: true, id, w: m.w, h: m.h, count: frames.length, frames, anim, cached: Boolean(m.cached) }, type: 'application/json; charset=utf-8', cache: 'private, max-age=300' }
         } catch (e) {
           return { status: 404, body: { ok: false, error: String(e?.message ?? e) }, type: 'application/json; charset=utf-8', cache: 'no-cache' }
         }
@@ -5349,10 +5829,11 @@ const routes = {
     /** 主界面标题下「已用磁盘」：作品库原图 + 轮次缩略图（60 秒缓存） */
     '/disk': {
       methods: ['GET'],
-      handler: () => {
+      handler: (q) => {
         let t = { trashBytes: 0, trashCount: 0, trashItems: [] }
         try { t = trashUsage(pixiv, load()) } catch { /* 回收站读不出来就先只给磁盘数 */ }
-        return ok({ ...galleryDiskUsage(pixiv), ...t })
+        const fresh = String(q.get('fresh') || '') === '1'
+        return ok({ ...galleryDiskUsage(pixiv, fresh ? { force: true } : undefined), ...t })
       },
     },
 
@@ -6073,8 +6554,22 @@ const routes = {
         let bytes = 0
         const failed = []
         const results = await mapPool(ids, WORK_CONCURRENCY, async (id) => {
-          const it = byId.get(String(id))
-          if (!it) return { ok: false, id: String(id), error: '这一轮里没有这个作品' }
+          let it = byId.get(String(id))
+          /* 检索里收录的 quick 作品不在候选清单里，用 quickWorks 的元数据兜住 */
+          if (!it) {
+            const qm = (state0.quickWorks || {})[String(id)]
+            if (!qm) return { ok: false, id: String(id), error: '这一轮里没有这个作品' }
+            it = {
+              id: String(id),
+              title: qm.title || '',
+              artist: qm.artist || '',
+              artistId: qm.artistId || '',
+              pages: Number(qm.pages) || 1,
+              rating: qm.rating || '',
+              xRestrict: qm.xRestrict || 0,
+              tags: Array.isArray(qm.tags) ? qm.tags : [],
+            }
+          }
           const job = dlJob(it.id)
           job.state = 'run'; job.done = 0; job.total = Math.max(1, Number(it.pages) || 1); job.at = Date.now()
           try {
@@ -6084,8 +6579,10 @@ const routes = {
             })
             job.state = 'done'; job.done = job.total; job.at = Date.now()
             const st = load()
-            st.libraryAdded[out.dir.split(/[\\/]/).pop()] = { at: new Date().toISOString(), round, id: String(id) }
+            const realName = out.dir.split(/[\\/]/).pop()
+            st.libraryAdded[realName] = { at: new Date().toISOString(), round, id: String(id) }
             markCollected(st, [String(id)], { round })
+            try { absorbQuickWork(st, String(id), realName) } catch { /* ignore */ }
             save()
             markCandidateSaved(round, String(id))
             return { ok: true, id: String(id), bytes: out.bytes, pages: out.pages }
@@ -7143,6 +7640,11 @@ export function apply(ctx) {
     } catch { /* ignore */ }
     try { ctx.logger?.('pixiv-gallery')?.info?.(m) } catch { /* ignore */ }
   }
+
+  /* 图片直连兜底真被用上时写一行日志（net.mjs 内部 5 分钟节流） */
+  try { setDirectImageLogger((m) => log(String(m))) } catch { /* ignore */ }
+  /* 激活时按配置同步开关（默认开） */
+  try { setDirectImageEnabled(load().config?.imageDirect !== false) } catch { /* ignore */ }
 
   log(`激活：home=${home} pixiv=${pixiv}`)
   // 作品库与下载统一住画廊家目录，不再依赖刷Pixiv 插件的 all_works；装上就把目录建好

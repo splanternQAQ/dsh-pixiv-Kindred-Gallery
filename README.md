@@ -4,7 +4,7 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.5.0-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.5.5-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)
@@ -296,6 +296,33 @@ MIT。刷Pixiv 插件另见其自身仓库与许可。
 ---
 
 ## 更新日志（倒序）
+
+### v1.5.5 · 2026-11-21 02:20:00
+
+这次主要是两件"兜底"的事：一条路走不通时，别再让你干等。
+
+**网络**
+
+- 修了一个让代理**从头到尾没被用过**的判定 bug：TLS 握手失败（`alert number 40` / `handshake failure` / `SSL routines` 这类）以前被当成"业务错误"直接抛出，换路逻辑根本没机会试代理；现在这类错误会被认成"连接阶段失败"，自动换下一条路由。
+- 顺手把「图片直连兜底」做了出来（见下）。
+
+**补图用直连兜底（设置 › 下载相关，默认开）**
+
+- 代理和直连都失败时，缩略图、多图作品的每一页改走 pixiv 图片站（`i.pximg.net`）的固定 IP 直连：不发 SNI、不校验证书。
+- **只补图，不参与抓图**——跑一轮走的是 API，那条路必须经过代理。代理正常时它一次都不会被触发。
+- 连续失败会静默 5 分钟，不会一直耗时间。想彻底关掉：设置里取消勾选，或设环境变量 `PIXIV_GALLERY_NO_DIRECT_IMAGE=1`。
+- 思路借自开源项目 [PixEz Flutter](https://github.com/Notsfsssf/pixez-flutter)，它用「固定 IP + 不带 SNI」实现直连 pixiv；这里只借这一招，且只用于图片站。
+
+**画廊检索**
+
+- 新增背景图：六张内置图 + 上传自己的图，也可以设成「每次打开随机一张」或「不要背景」。图上压一层遮罩，字压在图上也看得清。
+- 面板默认 16:9，右下角可拖动改尺寸、双击回到 16:9，尺寸会记住。
+- 每张内置图都标了出处，点一下直达 pixiv 作品页或 B 站视频。
+
+**小修**
+
+- 删除或恢复回收站的作品后，主界面「待删」占用会立刻刷新，不再等下一次缓存过期。
+- 设置里的「自动下载」与「图片直连兜底」并回主界面「下载相关」区，整块套了黄框，深浅主题各自适配。
 
 ### 1.5.0 — 交互大改：画廊检索、分享打包、统计与安全声明（推送于 2026-11-20 20:03:54）
 

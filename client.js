@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.5.0'
+    const CLIENT_BUILD = '1.5.5'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -92,17 +92,29 @@ window.__ModuleLoader__.load({
       let lastUser = 0
       let stopped = false
       const mark = () => { lastUser = Date.now() }
+      /* 只有「包着画廊主区的那几层」才算宿主滚动容器：设置面板、灯箱、检索面板都是自己的滚动条，
+         一律不许碰（否则主人一滚就被按回顶部）。 */
+      const PG_OWN_SCROLL = '[data-pg-main],[data-pg-modal],[data-pg-sheet],[data-pg-lightbox],[data-pg-lkpanel],[data-pg-sidemenu],[data-pg-tipbox]'
+      const hostScroller = (el) => {
+        try {
+          if (!el || el.nodeType !== 1) return false
+          /* 自己面板里的滚动条一律不碰；其余（含宿主对话容器、body）都算宿主滚动，按回顶部 */
+          if (el.closest && el.closest(PG_OWN_SCROLL)) return false
+          return true
+        } catch { return false }
+      }
       const onScroll = (e) => {
-        if (Date.now() - lastUser < 600) return
+        if (Date.now() - lastUser < 400) return
         const tgt = e.target && e.target.nodeType === 1 ? e.target : null
         if (!tgt || typeof tgt.scrollTop !== 'number') return
-        if (tgt.closest && tgt.closest('[data-pg-main]')) return
+        if (!hostScroller(tgt)) return
         if (tgt.scrollTop > 0) tgt.scrollTop = 0
       }
       const sweep = () => {
         if (stopped) return
-        if (Date.now() - lastUser < 600) return
+        if (Date.now() - lastUser < 400) return
         for (const n of chain()) {
+          if (!hostScroller(n)) continue
           try { if (n.scrollTop > 0) n.scrollTop = 0 } catch { /* ignore */ }
         }
         try { if (window.scrollY > 0) window.scrollTo(0, 0) } catch { /* ignore */ }
@@ -167,7 +179,6 @@ window.__ModuleLoader__.load({
         'max-width:min(420px,80vw)', 'padding:6px 10px', 'border-radius:9px',
         'font-size:12px', 'line-height:1.55', 'white-space:pre-line', 'word-break:break-word',
         'max-height:min(62vh,520px)', 'overflow:hidden',
-        'box-shadow:0 12px 28px -10px rgba(0,0,0,.45)',
       ].join(';')
       document.body.appendChild(box)
       pgTipState.box = box
@@ -227,6 +238,9 @@ window.__ModuleLoader__.load({
       box.style.background = light ? 'rgba(255,255,255,.99)' : 'rgba(24,27,34,.97)'
       box.style.color = light ? '#111827' : '#e6ecf6'
       box.style.border = light ? '1px solid rgba(0,0,0,.16)' : '1px solid rgba(255,255,255,.18)'
+      /* 阴影只留一层极弱的贴边投影，任何更重的都算多余 */
+      box.style.setProperty('box-shadow', light ? '0 2px 6px -4px rgba(15,23,42,.35)' : '0 3px 8px -5px rgba(0,0,0,.55)', 'important')
+      box.style.setProperty('filter', 'none', 'important')
       /* 标了 data-pg-tip-rainbow 的保留炫彩字 */
       const rainbow = el.hasAttribute('data-pg-tip-rainbow')
       while (box.firstChild) box.removeChild(box.firstChild)
@@ -583,6 +597,39 @@ pgDialogKeys()
             h('button', { 'data-pg-btn': '', onClick: () => onDone(false) }, '先不读'),
             h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => onDone(true) }, '开始读取'))))
     }
+    /* 新用户画像引导：登录 pixiv 后回到主界面/设置里弹一次，只弹一次。
+       两个选项都算「问过了」：之后再想读，走设置页的「读取当前账号偏好」。 */
+    function ProfileNudge({ theme = '', onLater, onRun }) {
+      const row = (n, main, eta) => h('div', { 'data-pg-nudgerow': '' },
+        h('i', {}, n),
+        h('span', {}, main, eta ? h('b', { 'data-pg-nudgeeta': '' }, ' · ' + eta) : null))
+      return h('div', {
+        'data-pg-modal': '', 'data-pg-theme': theme, style: { zIndex: 440 }, onClick: onLater,
+      },
+        h('div', {
+          'data-pg-sheet': '', 'data-pg-nudgesheet': '', style: { width: 'min(620px, 94vw)' },
+          onClick: (e) => e.stopPropagation(),
+        },
+          h('div', { 'data-pg-nudge': '' },
+            h('div', { 'data-pg-nudgehead': '' },
+              h('div', { 'data-pg-nudgetitle': '' }, '先花三分钟，让画廊认识你'),
+              h('div', { 'data-pg-nudgepill': '' }, '强烈建议新用户做一次')),
+            h('div', { 'data-pg-nudgetext': '' },
+              '检测到你的 pixiv 账号已经登录。要不要现在读取账号里的',
+              h('b', {}, '收藏与关注'), '，做一次口味画像分析？',
+              h('br'),
+              '不做的话，推荐度只能靠默认权重瞎猜；做完之后，喜爱标签、避开标签、重点作者和画风都会按你的口味来。'),
+            h('div', { 'data-pg-nudgerows': '' },
+              row('1', '读取收藏与关注（各前 100 条）', '约 20 秒'),
+              row('2', '看作品库里的高分图、分析画风', '1–2 分钟，最慢的一步'),
+              row('3', '写出口味报告，并新建一份个人偏好预设', '几秒')),
+            h('div', { 'data-pg-nudgewarn': '' },
+              '读的时候不能「跑一轮」（会和 pixiv 抢出口），但可以照常给卡片打分。整个过程约 3 分钟。'),
+            h('div', { 'data-pg-nudgefoot': '' },
+              h('button', { 'data-pg-btn': '', type: 'button', onClick: onLater }, '不了，之后我自己在设置里点'),
+              h('button', { 'data-pg-btn': '', 'data-primary': '', type: 'button', onClick: onRun }, '现在就做画像（约 3 分钟）')))))
+    }
+
     function usePrompt() {
       const [req, setReq] = React.useState(null)
       const ask = (kind, title, def = '', message = '') => new Promise((resolve) => setReq({ kind, title, def, message, resolve }))
@@ -2519,10 +2566,28 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-score]{display:inline-flex;align-items:center;justify-content:center;height:18px;padding:0 9px;border-radius:999px;font-size:10px;font-weight:800;letter-spacing:.04em;border:1px solid currentColor;background:rgba(0,0,0,.30);color:var(--pg-fg2);}
 [data-pg-score="none"]{opacity:.5;font-weight:600;border-style:dashed;}
 [data-pg-score="6"]{color:#9aa3ad;box-shadow:0 0 0 1px rgba(154,163,173,.12) inset;}
-[data-pg-score="7"]{color:#facc15;text-shadow:0 0 8px rgba(250,204,21,.35);}
+[data-pg-score="7"]{color:#b8860b;border-color:rgba(184,134,11,.6);background:rgba(120,86,10,.14);text-shadow:none;}
 [data-pg-score="8"]{color:#fb923c;text-shadow:0 0 8px rgba(251,146,60,.35);}
 [data-pg-score="9"]{color:#f43f5e;text-shadow:0 0 8px rgba(244,63,94,.35);}
-[data-pg-score="10"]{color:#ffd76a;border-color:#ffd76a;background:linear-gradient(180deg,rgba(255,215,106,.26),rgba(255,150,40,.12));text-shadow:0 0 9px rgba(255,200,80,.55);}
+[data-pg-score="10"]{color:#ffe680;border-color:#ffd83d;background:linear-gradient(180deg,rgba(255,222,110,.42),rgba(255,176,32,.20));box-shadow:0 0 0 1px rgba(255,216,61,.30),0 0 14px rgba(255,196,40,.38);text-shadow:0 0 3px rgba(255,255,255,.55),0 0 12px rgba(255,200,60,.85);}
+/* 10 分炫彩：内部透明 + 2px 渐变描边（mask 只留边）+ 文字渐变裁切。
+   坑一：padding-box 放透明层盖不住 border-box，会把整颗胶囊涂满 → 必须走 mask。
+   坑二：浅色里 [data-pg-theme="light"] [data-pg-score="10"] 是 (0,2,1) 且带 !important，
+        必须用 (0,3,1) 的同款选择器才压得住，否则浅色下仍是金色实心。
+   坑三：想让 conic-gradient 转起来，必须用 @property 注册角度变量（普通自定义属性不能插值）。 */
+@property --pg-rb-angle{syntax:'<angle>';inherits:false;initial-value:210deg;}
+[data-pg-rainbowscore] [data-pg-scoretext]{font:inherit;font-weight:900;letter-spacing:.02em;}
+[data-pg-rainbowscore]{position:relative;display:inline-flex;align-items:center;gap:4px;border:0 !important;background:transparent !important;box-shadow:none !important;text-shadow:none !important;font-weight:900;padding:0 2px;}
+[data-pg-rainbowicon]{width:14px;height:14px;flex:0 0 auto;display:inline-block;background:conic-gradient(from var(--pg-rb-angle),#ff2f8a 0deg,#ff9d00 48deg,#ffe600 96deg,#3dffa8 150deg,#00d4ff 204deg,#8b5cff 258deg,#ff2f8a 360deg);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-position:center;mask-position:center;-webkit-mask-size:contain;mask-size:contain;animation:pg-rbspin 3.2s linear infinite;filter:drop-shadow(0 0 5px rgba(180,140,255,.5));vertical-align:-.14em;}
+[data-pg-rainbowicon][data-icon="medal"]{-webkit-mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M12%201.6a7%207%200%201%200%200%2014%207%207%200%200%200%200-14Zm0%203.1a3.9%203.9%200%201%201%200%207.8%203.9%203.9%200%200%201%200-7.8ZM8.6%2014.5h6.8l1.9%207.3-5.3-2.4-5.3%202.4z%22%2F%3E%3C%2Fsvg%3E");mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M12%201.6a7%207%200%201%200%200%2014%207%207%200%200%200%200-14Zm0%203.1a3.9%203.9%200%201%201%200%207.8%203.9%203.9%200%200%201%200-7.8ZM8.6%2014.5h6.8l1.9%207.3-5.3-2.4-5.3%202.4z%22%2F%3E%3C%2Fsvg%3E");}
+[data-pg-rainbowicon][data-icon="crown"]{width:15px;height:15px;-webkit-mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M2.6%2018.6%201%209.4l5.4%203.6L12%206l5.6%207%205.4-3.6-1.6%209.2zM3.4%2019.9h17.2v2.3H3.4z%22%2F%3E%3C%2Fsvg%3E");mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M2.6%2018.6%201%209.4l5.4%203.6L12%206l5.6%207%205.4-3.6-1.6%209.2zM3.4%2019.9h17.2v2.3H3.4z%22%2F%3E%3C%2Fsvg%3E");}
+[data-pg-rainbowscore] [data-pg-scoretext]{background-image:linear-gradient(92deg,#ff2f8a,#ff9d00,#ffe600,#3dffa8,#00d4ff,#8b5cff,#ff2f8a);background-size:100% 100%;-webkit-background-clip:text;background-clip:text;color:transparent !important;-webkit-text-fill-color:transparent;animation:pg-rainbowhue 3.6s linear infinite;filter:saturate(1.25);}
+[data-pg-theme="light"] [data-pg-score="10"][data-pg-rainbowscore]{background:transparent !important;border-color:transparent !important;box-shadow:none !important;color:transparent !important;}
+[data-pg-theme="light"] [data-pg-rainbowicon]{background:conic-gradient(from var(--pg-rb-angle),#e6006e 0deg,#d97706 48deg,#b8a200 96deg,#059669 150deg,#0284c7 204deg,#6d28d9 258deg,#e6006e 360deg);filter:drop-shadow(0 0 4px rgba(120,60,160,.25));}
+[data-pg-theme="light"] [data-pg-rainbowscore] [data-pg-scoretext]{background-image:linear-gradient(92deg,#e6006e,#d97706,#b8a200,#059669,#0284c7,#6d28d9,#e6006e);}
+@keyframes pg-rbspin{from{--pg-rb-angle:210deg}to{--pg-rb-angle:570deg}}
+@keyframes pg-rainbowhue{from{filter:hue-rotate(0deg) saturate(1.25)}to{filter:hue-rotate(360deg) saturate(1.25)}}
+@media (prefers-reduced-motion:reduce){[data-pg-rainbowicon],[data-pg-rainbowscore] [data-pg-scoretext]{animation:none}}
 [data-pg-pmark]{position:absolute;left:6px;top:6px;z-index:2;font-size:9px;font-weight:800;line-height:1;padding:3px 5px;border-radius:4px;color:#fff;letter-spacing:.03em;background:#dc2626;box-shadow:0 1px 4px rgba(0,0,0,.45);}
 [data-pg-pmark="r18g"]{background:#7c3aed;}
 [data-pg-bmark]{position:absolute;right:6px;top:5px;z-index:2;display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:999px;font-size:11px;line-height:1;color:#fff;background:rgba(0,0,0,.52);border:1px solid rgba(255,255,255,.22);backdrop-filter:blur(3px);}
@@ -2580,7 +2645,7 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 /* 作品库顶栏翻页 + 一键复制；提示用炫彩字（原生 title 做不到彩色） */
 [data-pg-copypage],[data-pg-copyfiles]{position:relative;overflow:visible !important;}
 /* 提示条：底色在外层、彩虹字在内层 <b>（同一层用 background-clip:text 会被自己的底色盖掉） */
-[data-pg-copytip]{position:absolute;left:50%;top:calc(100% + 9px);transform:translateX(-50%);white-space:nowrap;padding:6px 12px;border-radius:9px;font-size:12px;font-weight:800;letter-spacing:.2px;opacity:0;pointer-events:none;transition:opacity .14s ease;z-index:95;background:rgba(10,14,24,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 10px 26px rgba(0,0,0,.42);}
+[data-pg-copytip]{position:absolute;left:50%;top:calc(100% + 9px);transform:translateX(-50%);white-space:nowrap;padding:6px 12px;border-radius:9px;font-size:12px;font-weight:800;letter-spacing:.2px;opacity:0;pointer-events:none;transition:opacity .14s ease;z-index:95;background:rgba(10,14,24,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 2px 6px -4px rgba(0,0,0,.45);}
 [data-pg-copytip] > b{display:inline-block;color:transparent;background-image:linear-gradient(92deg,#ff6bd6,#ffd166,#7cf5c3,#7cc4ff,#c9a7ff,#ff6bd6);background-size:280% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:pg-rainbow 6s linear infinite;}
 [data-pg-copypage]:hover,[data-pg-copyfiles]:hover,[data-pg-copypage]:focus-visible,[data-pg-copyfiles]:focus-visible{z-index:75;}
 [data-pg-copypage]:hover [data-pg-copytip],[data-pg-copyfiles]:hover [data-pg-copytip],[data-pg-copypage]:focus-visible [data-pg-copytip],[data-pg-copyfiles]:focus-visible [data-pg-copytip]{opacity:1;}
@@ -2626,6 +2691,8 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-head] [data-pg-btn][data-hue="green"]:hover{background:rgba(16,185,129,.36);border-color:rgba(110,231,183,.9);color:#ecfdf5;}
 [data-pg-head] [data-pg-btn][data-hue="amber"]{background:rgba(245,158,11,.22);border-color:rgba(251,191,36,.58);color:#fde68a;}
 [data-pg-head] [data-pg-btn][data-hue="amber"]:hover{background:rgba(245,158,11,.36);border-color:rgba(253,230,138,.9);color:#fffbeb;}
+[data-pg-head] [data-pg-btn][data-hue="red"]{background:rgba(239,68,68,.22);border-color:rgba(248,113,113,.58);color:#fecaca;}
+[data-pg-head] [data-pg-btn][data-hue="red"]:hover{background:rgba(239,68,68,.36);border-color:rgba(252,165,165,.9);color:#fff1f2;}
 [data-pg-head] [data-pg-btn][data-hue="blue"]{background:rgba(56,189,248,.22);border-color:rgba(125,211,252,.58);color:#bae6fd;}
 [data-pg-head] [data-pg-btn][data-hue="blue"]:hover{background:rgba(56,189,248,.36);border-color:rgba(186,230,253,.9);color:#f0f9ff;}
 [data-pg-head] [data-pg-tabs]{display:inline-flex;gap:2px;padding:2px;border-radius:10px;background:rgba(127,127,127,.14);}
@@ -2797,6 +2864,34 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-theme="light"] [data-pg-qqname]{color:#1b1e26;}
 [data-pg-theme="light"] [data-pg-qqnum]{color:#1d4ed8;border-color:rgba(59,130,246,.5);background:rgba(59,130,246,.12);}
 [data-pg-theme="light"] [data-pg-qqhint]{color:#5d6675;}
+/* —— 新用户画像引导弹窗（登录后一次性） —— */
+[data-pg-nudgesheet]{display:flex;flex-direction:column;width:min(620px,94vw);padding:20px 22px 16px;border-radius:18px;}
+[data-pg-nudge]{display:flex;flex-direction:column;gap:11px;}
+[data-pg-nudgehead]{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+[data-pg-nudgetitle]{font-size:17px;font-weight:900;letter-spacing:.01em;color:#f1f5fb;}
+[data-pg-nudgepill]{font-size:11.5px;font-weight:800;padding:3px 9px;border-radius:999px;background:rgba(244,114,182,.16);border:1px solid rgba(244,114,182,.48);color:#fbcfe8;}
+[data-pg-nudgetext]{font-size:13.5px;line-height:1.9;color:#c7d3e3;}
+[data-pg-nudgetext] b{color:#fbbf24;font-weight:800;}
+[data-pg-nudgerows]{display:flex;flex-direction:column;gap:7px;margin-top:1px;}
+[data-pg-nudgerow]{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;line-height:1.7;color:#a8b5c8;}
+[data-pg-nudgerow] i{flex:0 0 18px;height:18px;margin-top:2px;border-radius:6px;background:rgba(56,189,248,.16);border:1px solid rgba(56,189,248,.34);color:#7dd3fc;font-style:normal;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;}
+[data-pg-nudgeeta]{color:#7dd3fc;font-weight:800;}
+[data-pg-nudgewarn]{font-size:12px;line-height:1.75;color:#fcd34d;}
+[data-pg-nudgefoot]{display:flex;justify-content:flex-end;gap:9px;margin-top:4px;flex-wrap:wrap;}
+[data-pg-nudgesheet] [data-pg-btn]{color:#e8eef6;border-color:rgba(148,163,184,.44);background:rgba(148,163,184,.14);}
+[data-pg-nudgesheet] [data-pg-btn]:hover{color:#ffffff;background:rgba(148,163,184,.24);border-color:rgba(203,213,225,.62);}
+[data-pg-nudgesheet] [data-pg-btn][data-primary]{color:#ffffff;background:#3b82f6;border-color:#3b82f6;}
+[data-pg-theme="light"] [data-pg-nudgesheet] [data-pg-btn]{color:#1b1e26;background:#ffffff;border-color:rgba(0,0,0,.18);}
+[data-pg-theme="light"] [data-pg-nudgesheet] [data-pg-btn][data-primary]{color:#ffffff;background:#2563eb;border-color:#2563eb;}
+[data-pg-theme="light"] [data-pg-nudge]{color:#1b1e26;}
+[data-pg-theme="light"] [data-pg-nudgetitle]{color:#111827;}
+[data-pg-theme="light"] [data-pg-nudgepill]{background:#fce7f3;border-color:#f472b6;color:#9d174d;}
+[data-pg-theme="light"] [data-pg-nudgetext]{color:#3f4757;}
+[data-pg-theme="light"] [data-pg-nudgetext] b{color:#b45309;}
+[data-pg-theme="light"] [data-pg-nudgerow]{color:#4b5563;}
+[data-pg-theme="light"] [data-pg-nudgerow] i{background:#e0f2fe;border-color:#7dd3fc;color:#0369a1;}
+[data-pg-theme="light"] [data-pg-nudgeeta]{color:#0369a1;}
+[data-pg-theme="light"] [data-pg-nudgewarn]{color:#a16207;}
 [data-pg-taste]{margin:2px 0 14px;padding:12px 14px;border:1px solid rgba(34,211,238,.22);border-radius:12px;background:rgba(8,47,73,.32);display:flex;flex-direction:column;gap:10px;}
 [data-pg-tastenums]{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:#a5b4c8;}
 [data-pg-tastenums] b{color:#e0f2fe;font-weight:800;}
@@ -2817,6 +2912,15 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-tasteline] span{flex:0 0 92px;color:#7dd3fc;font-weight:700;}
 [data-pg-tasteline] b{font-weight:500;color:#dbeafe;}
 [data-pg-section3]{font-size:12.5px;font-weight:700;color:var(--dsw-alias-label-primary,#e2e8f0);margin:16px 0 4px;letter-spacing:.01em;}
+/* 设置里「下载相关」整块：黄框，深浅各一套 */
+[data-pg-dlbox]{margin:6px 0 12px;padding:10px 12px 12px;border:1.5px solid rgba(250,204,21,.55);border-radius:12px;background:rgba(250,204,21,.05);}
+[data-pg-dlbox] > [data-pg-group]:first-child{margin-top:0;}
+[data-pg-dlbox] [data-pg-dlsec]{margin:14px 0 6px;}
+[data-pg-theme="light"] [data-pg-dlbox] [data-pg-dlsec]{color:#1b1e26;}
+/* 勾选框文字跟着主题走：它原来吃的是宿主的 label-primary，黄底上会发灰 */
+[data-pg-dlbox] [data-pg-check]{color:var(--pg-fg1,#e5e7eb) !important;}
+[data-pg-theme="light"] [data-pg-dlbox] [data-pg-check]{color:#1b1e26 !important;}
+[data-pg-theme="light"] [data-pg-dlbox]{border-color:#eab308;background:rgba(254,249,195,.36);box-shadow:0 1px 0 rgba(234,179,8,.18);}
 [data-pg-section2]{margin:18px 0 8px;font-size:14.5px;font-weight:800;color:var(--dsw-alias-label-primary,#e8eef6);letter-spacing:.02em;}
 [data-pg-box="group"]{border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:2px 16px 14px;margin:0 0 16px;background:rgba(255,255,255,.028);}
 [data-pg-field-label]{font-size:11px;color:var(--dsw-alias-label-secondary,#aeb4bd);}
@@ -2963,7 +3067,11 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-theme="dark"] [data-pg-buildchip]{color:#bfe9ff;background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.5);}
 /* 画廊检索（顶栏入口）：像聊天一样问用法，粘 pid 就查作品 */
 [data-pg-lookupsheet]{position:fixed;inset:0;z-index:950;display:flex;align-items:center;justify-content:center;background:rgba(6,10,18,.58);backdrop-filter:blur(3px);}
-[data-pg-lkpanel]{width:min(96vw,1080px);height:min(92vh,900px);display:flex;flex-direction:column;border-radius:18px;overflow:hidden;background:#ffffff;color:#0f172a;border:1px solid #cbd5e1;box-shadow:0 28px 80px rgba(2,8,23,.30);}
+[data-pg-lkpanel]{position:relative;width:min(96vw,1080px);height:min(92vh,900px);display:flex;flex-direction:column;border-radius:18px;overflow:hidden;background:#ffffff;color:#0f172a;border:1px solid #cbd5e1;box-shadow:0 28px 80px rgba(2,8,23,.30);}
+/* 右下角的拉手：拖一下改窗口大小，双击回到 16:9 */
+[data-pg-lkgrip]{position:absolute;right:3px;bottom:3px;width:18px;height:18px;z-index:4;cursor:nwse-resize;opacity:.5;border-radius:3px;color:#64748b;background:repeating-linear-gradient(135deg,currentColor 0 1px,transparent 1px 5px);}
+[data-pg-lkgrip]:hover{opacity:.9;}
+[data-pg-theme="dark"] [data-pg-lkgrip]{color:#94a3b8;}
 [data-pg-theme="dark"] [data-pg-lkpanel]{background:#0b1220;color:#e9eef9;border-color:rgba(148,163,184,.32);}
 [data-pg-lkhead]{display:flex;align-items:center;gap:12px;padding:12px 16px;background:linear-gradient(92deg,#06b6d4,#3b82f6 60%,#8b5cf6);color:#fff;}
 [data-pg-lktitle]{font-size:15px;font-weight:900;letter-spacing:.4px;white-space:nowrap;}
@@ -2974,8 +3082,46 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-lkchip]{font-size:12px;line-height:1;padding:5px 9px;border-radius:999px;cursor:pointer;color:#0f5132;background:#dcfce7;border:1px solid #86efac;}
 [data-pg-lkchip]:hover{background:#bbf7d0;}
 [data-pg-theme="dark"] [data-pg-lkchip]{color:#d9f99d;background:rgba(34,197,94,.18);border-color:rgba(134,239,172,.45);}
-[data-pg-lkchat]{flex:1;min-height:0;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;background:#f8fafc;}
+[data-pg-lkchat]{flex:1 1 auto;min-height:190px;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;background:#f8fafc;}
 [data-pg-theme="dark"] [data-pg-lkchat]{background:#070d18;}
+[data-pg-lkpanel][data-pg-lkbg-on]{position:relative;background:#ffffff;}
+[data-pg-theme="dark"] [data-pg-lkpanel][data-pg-lkbg-on]{background:#0b1220;}
+[data-pg-lkbg]{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;border-radius:inherit;}
+[data-pg-lkbg] img{width:100%;height:100%;object-fit:cover;opacity:.62;display:block;}
+[data-pg-lkbgtint]{position:absolute;inset:0;background:linear-gradient(180deg,rgba(248,250,252,.46),rgba(248,250,252,.58) 46%,rgba(248,250,252,.7));}
+[data-pg-theme="dark"] [data-pg-lkbgtint]{background:linear-gradient(180deg,rgba(7,13,24,.38),rgba(7,13,24,.5) 46%,rgba(7,13,24,.62));}
+[data-pg-theme="light"] [data-pg-lkbgtint]{background:linear-gradient(180deg,rgba(248,250,252,.48),rgba(248,250,252,.6) 46%,rgba(248,250,252,.72));}
+[data-pg-lkpanel][data-pg-lkbg-on] > *:not([data-pg-lkbg]){position:relative;z-index:1;}
+[data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkchat],[data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lktagsbar]{background:transparent;}
+[data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkbubble="ai"]{background:rgba(255,255,255,.94);}
+[data-pg-theme="dark"] [data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkbubble="ai"]{background:rgba(17,28,47,.86);}
+[data-pg-lkcredit]{display:flex;align-items:center;gap:8px;padding:5px 16px 6px;font-size:11.5px;line-height:1.6;color:#64748b;border-top:1px dashed rgba(148,163,184,.35);}
+[data-pg-theme="dark"] [data-pg-lkcredit]{color:#94a3b8;}
+[data-pg-lkcredname]{flex:0 0 auto;max-width:52%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+a[data-pg-lkcredlink]{color:#2563eb;text-decoration:none;font-weight:700;border-bottom:1px dotted currentColor;cursor:pointer;}
+a[data-pg-lkcredlink]:hover{color:#1d4ed8;}
+[data-pg-lkcredlink][data-off]{color:#94a3b8;font-weight:500;border-bottom:0;}
+[data-pg-theme="dark"] a[data-pg-lkcredlink]{color:#7dd3fc;}
+[data-pg-theme="dark"] a[data-pg-lkcredlink]:hover{color:#bae6fd;}
+[data-pg-bggrid]{display:grid;grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:10px;margin:8px 0 10px;}
+[data-pg-bgcard]{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:12px;border:1px solid rgba(148,163,184,.35);background:rgba(148,163,184,.08);cursor:pointer;color:inherit;text-align:left;position:relative;transition:border-color .15s,box-shadow .15s,transform .15s;}
+[data-pg-bgcard]:hover{border-color:rgba(56,189,248,.75);transform:translateY(-1px);}
+[data-pg-bgcard][data-on]{border-color:#22d3ee;box-shadow:0 0 0 2px rgba(34,211,238,.35),0 8px 22px -14px rgba(14,165,233,.9);}
+[data-pg-bgcard] img{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:8px;display:block;background:rgba(148,163,184,.18);}
+[data-pg-bgcard] b{font-size:12px;font-weight:800;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+[data-pg-bgnone]{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:16/10;border-radius:8px;font-size:26px;background:rgba(148,163,184,.16);}
+[data-pg-bgcredit]{font-size:11px;line-height:1.5;color:#64748b;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+a[data-pg-bgcredit]:hover{color:#2563eb;text-decoration:underline;}
+[data-pg-bgcredit][data-off]{color:#94a3b8;}
+[data-pg-theme="dark"] [data-pg-bgcredit]{color:#94a3b8;}
+[data-pg-theme="dark"] a[data-pg-bgcredit]:hover{color:#7dd3fc;}
+[data-pg-bgrow]{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 10px;}
+[data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkcredit]{border-top-color:rgba(148,163,184,.4);}
+/* 背景亮起来以后，两行说明压在图上会发虚：给它们各自一条半透明底，字仍然看得清 */
+[data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkmech]{background:rgba(255,255,255,.62);color:#334155;}
+[data-pg-theme="dark"] [data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkmech]{background:rgba(8,14,26,.6);color:#c7d3e3;}
+[data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkcredit]{background:rgba(255,255,255,.55);}
+[data-pg-theme="dark"] [data-pg-lkpanel][data-pg-lkbg-on] [data-pg-lkcredit]{background:rgba(8,14,26,.55);}
 [data-pg-lkrow]{display:flex;flex-direction:column;gap:6px;max-width:86%;}
 [data-pg-lkrow="me"]{align-self:flex-end;align-items:flex-end;}
 [data-pg-lkrow="ai"]{align-self:flex-start;align-items:flex-start;}
@@ -2991,8 +3137,21 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-theme="dark"] [data-pg-lkhelloline]{color:#a9b8cc;}
 [data-pg-lkimgs]{display:flex;gap:6px;flex-wrap:wrap;}
 [data-pg-lkimgs] img{width:88px;height:88px;object-fit:cover;border-radius:10px;border:1px solid #cbd5e1;cursor:pointer;background:#000;}
+[data-pg-lkimgph]{font-size:11.5px;line-height:1.5;color:#64748b;padding:4px 2px;}
+[data-pg-lkmech]{padding:7px 16px;font-size:11.5px;line-height:1.6;color:#64748b;background:#f8fafc;border-bottom:1px solid #e2e8f0;}
+[data-pg-theme="dark"] [data-pg-lkmech]{color:rgba(148,163,184,.9);background:#0a1424;border-color:rgba(148,163,184,.22);}
+[data-pg-lkwhere]{margin-top:4px;font-size:12px;line-height:1.6;font-weight:700;color:#0e7490;background:rgba(14,165,233,.10);border:1px solid rgba(14,165,233,.34);border-radius:7px;padding:4px 9px;display:inline-block;}
+[data-pg-theme="dark"] [data-pg-lkwhere]{color:#7dd3fc;background:rgba(56,189,248,.12);border-color:rgba(56,189,248,.34);}
+[data-pg-lkworks]{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0;}
+[data-pg-lkwork]{width:88px;height:88px;border-radius:10px;overflow:hidden;border:1px solid #cbd5e1;background:#eef2f7;display:flex;align-items:center;justify-content:center;}
+[data-pg-lkwork][data-pg-lkwork]{border-color:#cbd5e1;}
+[data-pg-lkwork] img{width:100%;height:100%;object-fit:cover;display:block;}
+[data-pg-lkworknone]{font-size:10.5px;line-height:1.4;color:#94a3b8;text-align:center;padding:0 4px;}
+[data-pg-theme="dark"] [data-pg-lkwork]{border-color:rgba(148,163,184,.35);background:#0f1a2b;}
+[data-pg-theme="dark"] [data-pg-lkworknone]{color:rgba(148,163,184,.75);}
+[data-pg-theme="dark"] [data-pg-lkimgph]{color:rgba(148,163,184,.85);}
 [data-pg-theme="dark"] [data-pg-lkimgs] img{border-color:rgba(148,163,184,.4);}
-[data-pg-lkres]{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;padding:12px 16px;border-top:1px solid #e2e8f0;background:#f1f5f9;}
+[data-pg-lkres]{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;padding:12px 16px;border-top:1px solid #e2e8f0;background:#f1f5f9;flex:0 1 auto;max-height:44vh;overflow:auto;}
 [data-pg-lkres] img{background:transparent;padding:0;margin:0;}
 [data-pg-lookupsheet] input[data-pg-in],[data-pg-lookupsheet] select,[data-pg-lookupsheet] textarea{background:#ffffff !important;color:#0f172a !important;border-color:#cbd5e1 !important;}
 [data-pg-lookupsheet] select option{background:#ffffff;color:#0f172a;}
@@ -3002,7 +3161,7 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-lookupsheet][data-pg-theme="dark"] input[data-pg-in]::placeholder{color:#7c8aa0;}
 [data-pg-theme="dark"] [data-pg-lkres]{background:#0a1424;border-color:rgba(148,163,184,.24);}
 [data-pg-lkbig]{flex:0 0 auto;}
-[data-pg-lkbig] img{display:block;max-width:min(54vw,880px);max-height:78vh;width:auto;height:auto;object-fit:contain;border-radius:10px;background:transparent;box-shadow:0 6px 22px rgba(15,23,42,.16);}
+[data-pg-lkbig] img{display:block;max-width:min(34vw,420px);max-height:30vh;width:auto;height:auto;object-fit:contain;border-radius:10px;background:transparent;box-shadow:0 6px 22px rgba(15,23,42,.16);}
 [data-pg-lkbig] img[data-gapfix]{display:block;vertical-align:top;}
 [data-pg-lkinfo]{flex:1 1 300px;min-width:260px;display:flex;flex-direction:column;gap:6px;}
 [data-pg-lkname]{font-size:15px;font-weight:900;line-height:1.5;}
@@ -3028,7 +3187,39 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-lkbtns]{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 [data-pg-lkmeta]{font-size:11.5px;color:#64748b;}
 [data-pg-theme="dark"] [data-pg-lkmeta]{color:#93a4b8;}
-/* 画廊检索：深绿胶囊（树叶符号在文案里，不要花环） */
+/* 给作者提意见：红胶囊（白字嵌进去），阴影跟隔壁检索一样泛光、只是泛红 */
+[data-pg-feedbackbtn]{background:radial-gradient(120% 150% at 50% 0%,#e2564c 0%,#c02f28 46%,#8d1917 100%);color:#fff7f5;border:1px solid #d1554b;font-weight:800;letter-spacing:.3px;text-shadow:0 1px 2px rgba(60,8,6,.55);box-shadow:0 3px 12px rgba(190,44,38,.34),0 0 20px rgba(239,68,68,.22);}
+[data-pg-feedbackbtn]:hover{filter:brightness(1.08);}
+[data-pg-theme="light"] [data-pg-feedbackbtn]{background:radial-gradient(120% 150% at 50% 0%,#f4776a 0%,#e04b41 46%,#c2342c 100%);color:#fffaf9;border-color:#e06a60;box-shadow:0 3px 12px rgba(200,70,60,.28),0 0 18px rgba(239,68,68,.18);}
+[data-pg-fbpanel]{width:min(94vw,640px);max-height:88vh;overflow:auto;padding:16px 18px;border-radius:18px;background:#0d1524;color:#e8eef9;border:1px solid rgba(239,68,68,.34);box-shadow:0 26px 64px rgba(2,8,23,.55);}
+[data-pg-theme="light"] [data-pg-fbpanel]{background:#ffffff;color:#16233a;border-color:rgba(239,68,68,.34);box-shadow:0 22px 50px rgba(15,23,42,.24);}
+[data-pg-fbbody]{display:flex;gap:14px;flex-wrap:wrap;}
+[data-pg-fbcard]{flex:1 1 250px;min-width:230px;padding:12px;border-radius:14px;background:rgba(127,127,127,.08);border:1px solid rgba(148,163,184,.28);}
+[data-pg-theme="light"] [data-pg-fbcard]{background:#f8fafc;border-color:#e2e8f0;}
+[data-pg-fbcap]{font-size:12px;font-weight:800;letter-spacing:.4px;opacity:.78;margin:0 0 8px;}
+[data-pg-fbqr]{width:172px;height:172px;object-fit:contain;border-radius:10px;background:#fff;display:block;margin:0 auto 8px;}
+[data-pg-fbqq]{width:100%;justify-content:center;}
+[data-pg-fblink]{display:block;padding:9px 11px;margin:6px 0;border-radius:10px;text-decoration:none !important;font-weight:700;font-size:13px;line-height:1.4;color:#fda4a4;border:1px solid rgba(239,68,68,.32);background:rgba(239,68,68,.08);}
+[data-pg-fblink]:hover{background:rgba(239,68,68,.16);text-decoration:underline !important;}
+[data-pg-fblink]:focus-visible{text-decoration:underline !important;outline:2px solid rgba(248,113,113,.8);outline-offset:1px;}
+[data-pg-fblink][data-primary]{color:#fff;background:linear-gradient(180deg,#ef5350,#c62828);border-color:#ef5350;}
+[data-pg-fblink][data-primary]:hover{filter:brightness(1.06);}
+/* 浅色：白字得落在红胶囊上（白字＋白底等于看不见），阴影跟顶栏那颗红按钮同源 */
+[data-pg-theme="light"] [data-pg-fblink]{color:#ffffff !important;background:linear-gradient(180deg,#f26a5f 0%,#dc3f35 52%,#b52a24 100%);border-color:#e06156;text-shadow:0 1px 2px rgba(80,12,8,.45);box-shadow:0 2px 8px rgba(200,70,60,.22);}
+[data-pg-theme="light"] [data-pg-fblink]:hover{filter:brightness(1.06);background:linear-gradient(180deg,#f26a5f 0%,#dc3f35 52%,#b52a24 100%);}
+[data-pg-theme="light"] [data-pg-fblink][data-primary]{color:#ffffff !important;background:linear-gradient(180deg,#ef5350 0%,#c62828 100%);border-color:#ef5350;}
+[data-pg-fblink][data-fb]{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;box-sizing:border-box;padding:9px 14px;margin:7px 0;border-radius:999px;font-weight:750;font-size:12.5px;white-space:nowrap;overflow:hidden;}
+[data-pg-fblink][data-fb] [data-pg-fblabel]{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;}
+[data-pg-fbico]{flex:0 0 auto;display:block;}
+[data-pg-fblabel]{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+[data-pg-fblink][data-fb="bili"]{background:linear-gradient(180deg,#28bce8 0%,#00a1d6 55%,#0090c0 100%);border-color:#00a1d6;color:#fff !important;box-shadow:0 2px 9px rgba(0,161,214,.30);}
+[data-pg-fblink][data-fb="bili"]:hover{filter:brightness(1.08);background:linear-gradient(180deg,#35c6ef 0%,#0aa9de 55%,#0096c8 100%);}
+[data-pg-fblink][data-fb="gh"]{background:linear-gradient(180deg,#20242c 0%,#111318 60%,#0a0c10 100%);border-color:#2f353f;color:#fff !important;box-shadow:0 2px 9px rgba(0,0,0,.30);}
+[data-pg-fblink][data-fb="gh"]:hover{filter:brightness(1.22);background:linear-gradient(180deg,#2a2f38 0%,#171b21 60%,#0e1116 100%);}
+[data-pg-fblink][data-fb="gh"][data-primary]{border-color:rgba(255,255,255,.34);box-shadow:0 0 0 1px rgba(255,255,255,.10),0 3px 12px rgba(0,0,0,.34);}
+[data-pg-theme="light"] [data-pg-fblink][data-fb="bili"]{background:linear-gradient(180deg,#2bc0ea 0%,#00a1d6 55%,#0090c0 100%) !important;border-color:#00a1d6 !important;color:#fff !important;}
+[data-pg-theme="light"] [data-pg-fblink][data-fb="gh"]{background:linear-gradient(180deg,#24282f 0%,#14171c 60%,#0b0d11 100%) !important;border-color:#2f353f !important;color:#fff !important;}
+[data-pg-fbhint]{margin-top:8px;font-size:11.5px;line-height:1.55;opacity:.7;}/* 画廊检索：深绿胶囊（树叶符号在文案里，不要花环） */
 [data-pg-lookupbtn]{background:radial-gradient(120% 150% at 50% 0%,#2f8a4a 0%,#176b34 46%,#0d4d24 100%);color:#f4fff8;border:1px solid #2f7d4a;font-weight:800;letter-spacing:.3px;text-shadow:0 1px 2px rgba(4,30,14,.55);box-shadow:0 3px 12px rgba(16,80,40,.3);}
 [data-pg-lookupbtn]:hover{filter:brightness(1.1);}
 /* 卡片二级页面的 F 键提示（进入后 5 秒淡出，像绘图工具的工具框） */
@@ -3055,13 +3246,13 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-theme="light"] [data-pg-fpick] button{color:#0f172a;}
 [data-pg-theme="light"] [data-pg-fpick] button:hover{background:#e0f2fe;}
 /* 主界面 tips 条：主题按钮下面那一条，字要够大、投影要够重 */
-[data-pg-tipbar]{flex-basis:100%;display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:4px 14px;height:42px;min-height:42px;max-height:42px;box-sizing:border-box;overflow:hidden;border-radius:12px;background:transparent;border:0;box-shadow:0 10px 24px -12px rgba(2,8,23,.78),0 2px 8px -4px rgba(2,8,23,.5);cursor:pointer;}
-[data-pg-tipbar]:hover{box-shadow:0 12px 28px -12px rgba(2,8,23,.88),0 2px 10px -4px rgba(2,8,23,.58);}
+[data-pg-tipbar]{flex-basis:100%;display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:4px 14px;height:42px;min-height:42px;max-height:42px;box-sizing:border-box;overflow:hidden;border-radius:12px;background:transparent;border:0;box-shadow:0 3px 10px -7px rgba(2,8,23,.7);cursor:pointer;}
+[data-pg-tipbar]:hover{box-shadow:0 4px 12px -8px rgba(2,8,23,.75);}
 [data-pg-tiptag]{flex:none;font-size:11px;font-weight:800;letter-spacing:.4px;padding:2px 8px;border-radius:999px;color:#052e3b;background:#7dd3fc;}
 [data-pg-tipbar][data-kind="safe"] [data-pg-tiptag]{background:#fca5a5;color:#450a0a;}
 [data-pg-tipbar][data-kind="sp"] [data-pg-tiptag]{background:#fcd34d;color:#422006;}
 [data-pg-tiptext]{flex:1;min-width:0;font-size:13px;line-height:1.32;font-weight:600;letter-spacing:.2px;color:#eaf6ff;text-shadow:0 1px 2px rgba(0,0,0,.5);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
-[data-pg-theme="light"] [data-pg-tipbar]{box-shadow:0 10px 22px -12px rgba(15,23,42,.5),0 2px 6px -4px rgba(15,23,42,.28);}
+[data-pg-theme="light"] [data-pg-tipbar]{box-shadow:0 3px 9px -7px rgba(15,23,42,.45);}
 [data-pg-theme="light"] [data-pg-tiptext]{color:#0f2137;text-shadow:0 1px 1px rgba(255,255,255,.9);}
 [data-pg-theme="light"] [data-pg-tiptag]{color:#06283a;background:#67c6ec;}
 /* 顶栏三件套（预设 / 严格度 / 立马跑一轮）统一规格：同高 30、同圆角、同字号、文字垂直居中 */
@@ -3220,7 +3411,7 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-collitem]{position:relative;padding:7px 10px !important;border-radius:9px;font-size:13.5px !important;font-weight:800 !important;line-height:1.35;letter-spacing:.2px;}
 [data-pg-side] [data-pg-collitem]{min-height:32px;display:flex;align-items:center;gap:4px;}
 [data-pg-side] [data-pg-collitem] span{font-size:13.5px !important;font-weight:800;}
-[data-pg-perfecttip]{display:none;position:absolute;left:100%;top:-6px;margin-left:10px;width:264px;z-index:80;padding:10px 12px;border-radius:10px;background:rgba(9,16,28,.97);border:1px solid rgba(124,196,255,.5);box-shadow:0 20px 44px -18px rgba(0,0,0,.9);pointer-events:none;}
+[data-pg-perfecttip]{display:none;position:absolute;left:100%;top:-6px;margin-left:10px;width:264px;z-index:80;padding:10px 12px;border-radius:10px;background:rgba(9,16,28,.97);border:1px solid rgba(124,196,255,.5);box-shadow:0 2px 8px -5px rgba(0,0,0,.55);pointer-events:none;}
 [data-pg-perfecttipin]{display:block;font-size:11px;line-height:1.6;font-weight:800;background:linear-gradient(92deg,#ff8ae2,#ffd166,#7cf5c3,#7cc4ff,#c9a7ff,#ff8ae2);background-size:280% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:pg-rainbow 6s linear infinite;}
 [data-pg-collitem]:hover [data-pg-perfecttip]{display:block;}
 [data-pg-pinicon]{flex:0 0 auto;margin-right:5px;vertical-align:-1px;}
@@ -3228,7 +3419,7 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-pinicon][data-pin="blue"]{color:#38bdf8;filter:drop-shadow(0 0 5px rgba(56,189,248,.55));}
 [data-pg-collitem][data-pin="gold"]{box-shadow:inset 0 0 0 1px rgba(245,197,66,.34);}
 [data-pg-collitem][data-dragover]{outline:2px dashed rgba(56,189,248,.85);outline-offset:-2px;}
-[data-pg-perfecttipfixed]{position:fixed;z-index:3000;max-width:300px;padding:10px 12px;border-radius:10px;background:rgba(9,16,24,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 18px 40px rgba(0,0,0,.55);pointer-events:none;}
+[data-pg-perfecttipfixed]{position:fixed;z-index:3000;max-width:300px;padding:10px 12px;border-radius:10px;background:rgba(9,16,24,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 3px 8px -5px rgba(0,0,0,.55);pointer-events:none;}
 /* ---- 0.7.40 / 0.7.41 选择收藏夹子页面 ---- */
 [data-pg-collpick]{display:flex;flex-direction:column;padding:16px 18px 0;}
 [data-pg-collpick-head]{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid rgba(127,127,127,.18);}
@@ -3431,7 +3622,7 @@ a[data-pg-tastepill]{text-decoration:none;}
     const SCORE_LABEL_FALLBACK = { 6: '平庸', 7: '还行', 8: '可圈可点', 9: '佳作', 10: '神作！' }
     const DEFAULT_LABELS = { ...SCORE_LABEL_FALLBACK }
     /** 评价文案颜色（可在设置 · 个性化里改）；默认对齐旧版按档位硬编码的那套色 */
-    const DEFAULT_LABEL_COLORS = { 6: '#9aa3ad', 7: '#facc15', 8: '#fb923c', 9: '#f43f5e', 10: '#ffd76a' }
+    const DEFAULT_LABEL_COLORS = { 6: '#9aa3ad', 7: '#b8860b', 8: '#fb923c', 9: '#f43f5e', 10: 'rainbow' }
     const hexA = (hex, a) => {
       const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ''))
       if (!m) return ''
@@ -3505,20 +3696,26 @@ a[data-pg-tastepill]{text-decoration:none;}
       return h('div', { 'data-pg-pager': '', 'data-size': String(pageSize || '') }, ...out)
     }
 
-    function ScoreBadge({ score, labels, colors }) {
+    /* 10 分徽章前面的那枚图标：medal＝普通满分，crown＝「藏赏两宜」里的作品 */
+    const pgRainbowIcon = (kind) => h('span', { 'data-pg-rainbowicon': '', 'data-icon': kind === 'crown' ? 'crown' : 'medal', 'aria-hidden': 'true' })
+
+    function ScoreBadge({ score, labels, colors, icon = '' }) {
       const band = scoreBand(score)
       const text = String(labels?.[band] || labels?.[String(band)] || SCORE_LABEL_FALLBACK[band] || '')
       const n = Number(score)
       const c = String(colors?.[band] || colors?.[String(band)] || '').trim()
-      const paint = /^#[0-9a-f]{6}$/i.test(c)
+      /* 10 分可以选「炫彩」：文字走渐变裁切、边框走 conic 渐变、内部保持透明 */
+      const rainbow = band === 10 && (!c || c === 'rainbow')
+      const paint = !rainbow && /^#[0-9a-f]{6}$/i.test(c)
         ? { color: c, borderColor: hexA(c, 0.55), textShadow: `0 0 9px ${hexA(c, 0.4)}` }
         : undefined
       return h('span', {
         'data-pg-score': String(band),
+        'data-pg-rainbowscore': rainbow ? '' : undefined,
         'data-pg-custom-color': paint ? '' : undefined,
         title: `评分 ${Number.isFinite(n) ? n.toFixed(1) : '—'} / 10`,
         style: paint,
-      }, text)
+      }, rainbow ? pgRainbowIcon(icon) : null, h('b', { 'data-pg-scoretext': '' }, text))
     }
 
     function AvgBadge({ label, value }) {
@@ -3804,16 +4001,17 @@ function RoundCover({ roundId, id, title, artist }) {
         api('/ugoira?id=' + enc(ugoiraId))
           .then((r) => {
             if (!alive) return
-            if (!r?.ok || !Array.isArray(r.frames) || r.frames.length < 2) { setUgoiraFailed(true); return }
-            const list = r.frames.map((f) => ({ u: BASE + f.u, delay: Math.max(40, Number(f.delay) || 80) }))
-            /* 服务端已经合成过整段循环 webp：一个请求就能播，不必再逐帧拉 */
-            if (r.anim) {
+            const list = (r && Array.isArray(r.frames)) ? r.frames.map((f) => ({ u: BASE + f.u, delay: Math.max(40, Number(f.delay) || 80) })) : []
+            /* 服务端已经合成过整段循环 webp：一个请求就能播，不必再逐帧拉。
+               注意顺序：anim 优先于「帧表 >= 2」的判定，否则本地只有 anim、没解压帧时会误判成静态图。 */
+            if (r && r.anim) {
               setFrames(list)
               setAnimUrl(BASE + r.anim)
-              setLbLoad({ done: list.length, total: list.length })
+              setLbLoad({ done: 1, total: 1 })
               setPhase('ready')
               return
             }
+            if (!r?.ok || list.length < 2) { setUgoiraFailed(true); return }
             /* 还没有整段文件：先按帧播，同时在后台让它合成，下次点开就是一个请求 */
             try { fetch(BASE + '/ugoira-anim?build=1&id=' + enc(ugoiraId), { credentials: 'same-origin' }).catch(() => {}) } catch { /* ignore */ }
             // 先把每一帧都下载并解码进内存：播放时只切 opacity，不再逐帧换 <img> 重新解码（否则会抽帧）
@@ -3884,7 +4082,7 @@ function RoundCover({ roundId, id, title, artist }) {
       })
 
       const stop = (e) => e.stopPropagation()
-      const isUgoira = Boolean(frames && frames.length > 1)
+      const isUgoira = Boolean(animUrl || (frames && frames.length > 1))
       const shown = src
       const staticSrc = (zoom.s > 1.25 && fullSrc) ? fullSrc : shown
       const staticReady = !staticSrc || loadedSrc === staticSrc
@@ -3909,7 +4107,7 @@ function RoundCover({ roundId, id, title, artist }) {
       }
       const bare = String(title || '').replace(/（[^（）]*）\s*$/, '')
       const label = isUgoira
-        ? `${bare} · 动图 ${frames.length} 帧`
+        ? `${bare} · 动图${frames && frames.length ? ` ${frames.length} 帧` : ''}`
         : (title || '')
 
       const meta = [artist, hint].filter(Boolean).join(' · ')
@@ -3927,7 +4125,7 @@ function RoundCover({ roundId, id, title, artist }) {
           title: onWorkNext ? '下一件作品（C / ↓）' : '已经是最后一件作品了',
           onClick: (e) => { e.stopPropagation(); workNext() },
         }, '›') : null,
-        frames && frames.length > 1 ? h('div', { 'data-pg-lb-tag': '', title: '这是 pixiv 动图（ugoira），点开就会循环播放；滚轮可以放大看细节' }, `动图 · ${frames.length} 帧`) : null,
+        (animUrl || (frames && frames.length > 1)) ? h('div', { 'data-pg-lb-tag': '', title: '这是 pixiv 动图（ugoira），点开就会循环播放；滚轮可以放大看细节' }, `动图${frames && frames.length ? ` · ${frames.length} 帧` : ''}`) : null,
         h('div', {
           'data-pg-lightbox-stage': '',
           ref: stageRef,
@@ -5177,7 +5375,7 @@ function RoundCover({ roundId, id, title, artist }) {
             },
             h('div', { 'data-pg-rainbowring': '' }),
             h('div', { className: 'lc' },
-              w.cover ? h('img', { src: `${BASE}/lib-cover?name=${enc(w.name)}`, loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
+              w.cover ? h('img', { src: w.quick ? `${BASE}/thumb-by-id?id=${enc(w.id)}&w=240` : `${BASE}/lib-cover?name=${enc(w.name)}`, loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
               h(CardMarks, { work: w })),
             h('div', { className: 'lb' },
               h('div', { 'data-pg-ltrow': '', className: 'lt' }, h('span', { 'data-pg-lttitle': '' }, w.title || w.name),
@@ -5376,7 +5574,7 @@ function RoundCover({ roundId, id, title, artist }) {
         catch (e) { if (alive.current) setLib((x) => x || { collections: [] }) }
       }, [])
       React.useEffect(() => { load() }, [load])
-      const cols = ((lib && lib.collections) || []).filter((c) => !c.system)
+      const cols = ((lib && lib.collections) || []).filter((c) => !c.system || c.name === '藏赏两宜，无可挑剔' || c.name === '已收录的 AI 作品')
       const inCol = (c) => Boolean(c && Array.isArray(c.works) && c.works.indexOf(work.name) >= 0)
       /* 白底卡＝这件作品已在夹里：再点一下＝取消勾 + 从该收藏夹移出 */
       const removeFrom = async (c) => {
@@ -6767,7 +6965,8 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         if (w.round && w.id) {
           try { return await fetchImageBlob(BASE + '/thumb?round=' + enc(w.round) + '&id=' + enc(w.id)) } catch { /* 退到作品库缩略图 */ }
         }
-        return await fetchImageBlob(BASE + '/lib-cover?name=' + enc(w.name) + '&w=1000')
+        if (w.quick && w.id) return await fetchImageBlob(BASE + '/thumb-by-id?id=' + enc(w.id) + '&w=1000')
+    return await fetchImageBlob(BASE + '/lib-cover?name=' + enc(w.name) + '&w=1000')
       }
       /* 一键复制当前页：第一件图进 image/png（聊天框直接粘），全部作品的图进 text/html（富文本编辑器能拿到全部） */
       const copyPageWorks = async () => {
@@ -6782,7 +6981,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             try { pics.push({ w, png: await blobToPng(await pageWorkBlob(w)) }) } catch { /* 取不到就跳过 */ }
           }
           if (!pics.length) throw new Error('这一页的图都没能取回来')
-          const html = pics.map((p) => '<img src="' + BASE + '/lib-cover?name=' + encodeURIComponent(p.w.name) + '&w=900" alt="">').join('')
+          const html = pics.map((p) => '<img src="' + (p.w.quick && p.w.id ? BASE + '/thumb-by-id?id=' + encodeURIComponent(p.w.id) + '&w=900' : BASE + '/lib-cover?name=' + encodeURIComponent(p.w.name) + '&w=900') + '" alt="">').join('')
           const text = pics.map((p) => (p.w.title || p.w.name) + (p.w.artist ? ' — ' + p.w.artist : '')).join('\n')
           const data = {
             'image/png': pics[0].png,
@@ -6958,7 +7157,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
                 onPointerLeave: cancelCollPress,
                 onClick: () => { if (takeCollSkip()) return; setKind('collection'); setName(c.name) },
                 onContextMenu: (e) => openMenu(e, 'collection', c.name),
-                'data-pg-tip': gold ? '「藏赏两宜，无可挑剔」：当一件作品的所有自带标签都是你喜爱的标签、同时被你打了 10 分，它就会自动进这个收藏夹。\n这些作品绝对无可挑剔，能欣赏这样的杰作真乃人生一幸（建议深色模式鉴赏）' : undefined,
+                'data-pg-tip': gold ? '「藏赏两宜，无可挑剔」：当一件作品的所有自带标签都是你喜爱的标签、同时被你打了 10 分，它就会自动进这个收藏夹；你也可以在详情页手动把它加进来（手动加入的不会被自动踢出去，只有手动移出才算数）。\n这些作品绝对无可挑剔，能欣赏这样的杰作真乃人生一幸（建议深色模式鉴赏）' : undefined,
                 'data-pg-tip-rainbow': gold ? '' : undefined,
               },
                 pinned ? h('svg', { 'data-pg-pinicon': '', 'data-pin': gold ? 'gold' : 'blue', viewBox: '0 0 24 24', width: 11, height: 11 }, h('path', { d: 'M14 2l8 8-3 1-4 4 1 5-2 2-4-6-6-4 2-2 5 1 4-4z', fill: 'currentColor' })) : null,
@@ -7075,7 +7274,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             },
             h('div', { 'data-pg-rainbowring': '' }),
             h('div', { className: 'lc' },
-              w.cover ? h('img', { src: w.virtual ? `${BASE}/thumb?round=${enc(w.round)}&id=${enc(w.id)}` : `${BASE}/lib-cover?name=${enc(w.name)}&w=240`, loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
+              w.cover ? h('img', { src: w.quick ? `${BASE}/thumb-by-id?id=${enc(w.id)}&w=240` : (w.virtual ? `${BASE}/thumb?round=${enc(w.round)}&id=${enc(w.id)}` : `${BASE}/lib-cover?name=${enc(w.name)}&w=240`), loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
               h(CardMarks, { work: w }),
               pagesBadge(w.pageCount || w.pages, Array.isArray(w.files) ? w.files.length : 0),
               dl[String(w.id)] && dl[String(w.id)].state !== 'done'
@@ -7093,7 +7292,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
                     ? h('span', { 'data-pg-dlpct': '', title: `正在下载 ${dl[String(w.id)].done || 0} / ${dl[String(w.id)].total || 1} 页` }, `${Math.round(((dl[String(w.id)].done || 0) / Math.max(1, dl[String(w.id)].total || 1)) * 100)}%`)
                     : h('button', { 'data-pg-dlbtn': '', tabIndex: -1, title: '下载这件作品到本地', onClick: (e) => { e.stopPropagation(); downloadOne(w) } }, DownloadIcon())),
                 isMasterpiece(w.userScore)
-                  ? h(ScoreBadge, { key: 'eval', score: 10, labels: cfg?.scoreLabels, colors: cfg?.scoreLabelColors })
+                  ? h(ScoreBadge, { key: 'eval', score: 10, labels: cfg?.scoreLabels, colors: cfg?.scoreLabelColors, icon: pgTagsAllLoved(w, lib) ? 'crown' : '' })
                   : (w.userScore !== null && w.userScore !== undefined
                     ? h(ScoreBadge, { key: 'eval', score: w.userScore, labels: cfg?.scoreLabels, colors: cfg?.scoreLabelColors })
                     : h('span', { key: 'eval', 'data-pg-score': 'none' }, '未评分'))),
@@ -8077,13 +8276,98 @@ function pgPickTip() {
   return { kind, text }
 }
 
-/* 画廊检索：一个像聊天框的入口 —— 平时问用法（默认用你此刻的模型），粘 pid 就查作品、收进库 */
+/* 给作者提意见：群号 / 二维码 / B 站视频 / 仓库与 issue，全在一个弹窗里 */
+function FeedbackSheet({ onClose, say, theme = '' }) {
+  const QQ_GROUP = '1093198539'
+  const [copied, setCopied] = React.useState(false)
+  const copyQq = async () => {
+    try {
+      await navigator.clipboard.writeText(QQ_GROUP)
+      setCopied(true)
+      if (typeof say === 'function') say('群号已复制：' + QQ_GROUP, 'good', 3000)
+      setTimeout(() => setCopied(false), 1600)
+    } catch (e) {
+      if (typeof say === 'function') say('复制失败，手动选一下：' + QQ_GROUP, 'warn', 4200)
+    }
+  }
+  return h('div', {
+    'data-pg-modal': '', 'data-pg-fbsheet': '', 'data-pg-theme': theme || undefined,
+    onClick: (e) => { if (e.target === e.currentTarget) onClose() },
+  },
+  h('div', { 'data-pg-fbpanel': '', 'data-pg-sheet': '' },
+    h('div', { 'data-pg-lkhead': '' },
+      h('div', { 'data-pg-lktitle': '' }, '给作者提意见🥵'),
+      h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose }, '关闭')),
+    h('div', { 'data-pg-fbbody': '' },
+      h('div', { 'data-pg-fbcard': '' },
+        h('div', { 'data-pg-fbcap': '' }, '进群直接说（最快）'),
+        h('img', { 'data-pg-fbqr': '', src: BASE + '/qq-group-qr', alt: 'DSH 知心画廊交流群二维码' }),
+        h('button', {
+          'data-pg-btn': '', 'data-pg-fbqq': '', type: 'button', title: '点一下复制群号', onClick: copyQq,
+        }, copied ? '已复制 ✓' : ('群号：' + QQ_GROUP))),
+      h('div', { 'data-pg-fbcard': '' },
+        h('div', { 'data-pg-fbcap': '' }, '其他能找到我的地方'),
+        h('a', {
+          'data-pg-fblink': '', 'data-fb': 'bili', href: 'https://www.bilibili.com/video/BV19YWn6CEur',
+          target: '_blank', rel: 'noreferrer',
+        },
+          h('svg', { 'data-pg-fbico': '', viewBox: '0 0 24 24', width: 18, height: 18, 'aria-hidden': 'true' },
+            h('path', { d: 'M17.813 4.653h.854c1.51.054 2.769.578 3.773 1.574 1.004.995 1.524 2.249 1.56 3.76v7.36c-.036 1.51-.556 2.769-1.56 3.773s-2.262 1.524-3.773 1.56H5.333c-1.51-.036-2.769-.556-3.773-1.56S.036 18.858 0 17.347v-7.36c.036-1.511.556-2.765 1.56-3.76 1.004-.996 2.262-1.52 3.773-1.574h.774l-1.174-1.12a1.234 1.234 0 0 1-.373-.906c0-.356.124-.658.373-.907l.027-.027c.267-.249.573-.373.92-.373.347 0 .653.124.92.373L9.653 4.44c.071.071.134.142.187.213h4.267a.836.836 0 0 1 .16-.213l2.853-2.747c.267-.249.573-.373.92-.373.347 0 .662.151.929.4.267.249.391.551.391.907 0 .355-.124.657-.373.906zM5.333 7.24c-.746.018-1.373.276-1.88.773-.506.498-.769 1.13-.786 1.894v7.52c.017.764.28 1.395.786 1.893.507.498 1.134.756 1.88.773h13.334c.746-.017 1.373-.275 1.88-.773.506-.498.769-1.129.786-1.893v-7.52c-.017-.765-.28-1.396-.786-1.894-.507-.497-1.134-.755-1.88-.773zM8 11.107c.373 0 .684.124.933.373.25.249.383.569.4.96v1.173c-.017.391-.15.711-.4.96-.249.25-.56.374-.933.374s-.684-.125-.933-.374c-.25-.249-.383-.569-.4-.96V12.44c0-.373.129-.689.386-.947.258-.257.574-.386.947-.386zm8 0c.373 0 .684.124.933.373.25.249.383.569.4.96v1.173c-.017.391-.15.711-.4.96-.249.25-.56.374-.933.374s-.684-.125-.933-.374c-.25-.249-.383-.569-.4-.96V12.44c.017-.391.15-.711.4-.96.249-.249.56-.373.933-.373Z', fill: '#fff' })),
+          h('span', { 'data-pg-fblabel': '' }, 'B 站介绍')),
+        h('a', {
+          'data-pg-fblink': '', 'data-fb': 'gh', href: 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery',
+          target: '_blank', rel: 'noreferrer',
+        },
+          h('svg', { 'data-pg-fbico': '', viewBox: '0 0 24 24', width: 18, height: 18, 'aria-hidden': 'true' },
+            h('path', { d: 'M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12', fill: '#fff' })),
+          h('span', { 'data-pg-fblabel': '' }, 'GitHub 仓库')),
+        h('a', {
+          'data-pg-fblink': '', 'data-fb': 'gh', 'data-primary': '', href: 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery/issues/new',
+          target: '_blank', rel: 'noreferrer',
+        },
+          h('svg', { 'data-pg-fbico': '', viewBox: '0 0 24 24', width: 18, height: 18, 'aria-hidden': 'true' },
+            h('path', { d: 'M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12', fill: '#fff' })),
+          h('span', { 'data-pg-fblabel': '' }, '提 issue')),
+                h('div', { 'data-pg-fbhint': '' }, '提的时候写清楚：哪一步、看到什么、你期望什么；有截图最好。')))))
+}
+
+/* 画廊检索：一个像聊天框的入口 —— 平时问用法（默认用你此刻的模型），粘 pid 就查作品、收进库 *//* 画廊检索：一个像聊天框的入口 —— 平时问用法（默认用你此刻的模型），粘 pid 就查作品、收进库 */
+/* 历史里只留文字与作品编号；图片本体（data URL）不存，否则 localStorage 配额一满就整段丢失 */
+const lkSlimMsg = (m) => {
+  if (!m) return m
+  const keep = { role: m.role, text: m.text }
+  if (m.bad) keep.bad = m.bad
+  if (m.act) keep.act = m.act
+  if (Array.isArray(m.wl) && m.wl.length) keep.wl = m.wl.map((x) => ({ id: String(x.id || ''), title: String(x.title || ''), score: Number(x.score) || 0 }))
+  if (Array.isArray(m.imgs) && m.imgs.length) keep.imgN = m.imgs.length
+  return keep
+}
+
+/* 历史里那几件作品的缩略图：只认本地已有的文件，不联网、不补下 */
+function LkWorkThumb({ w }) {
+  const [bad, setBad] = React.useState(false)
+  const score = Number((w && w.score) || 0)
+  const title = String((w && w.title) || '无题')
+  const tip = score > 0
+    ? '「' + title + '」#' + (w && w.id) + ' · ' + score + ' 分' + (bad ? ' · 缩略图未下载' : '')
+    : '「' + title + '」#' + (w && w.id) + ' · 当时没打分，也就没有缩略图'
+  const show = score > 0 && !bad
+  return h('div', { 'data-pg-lkwork': show ? 'ok' : 'none', 'data-pg-tip': tip },
+    show
+      ? h('img', {
+        src: BASE + '/thumb/local?id=' + encodeURIComponent(String((w && w.id) || '')) + '&w=180',
+        alt: title, loading: 'lazy', onError: () => setBad(true),
+      })
+      : h('span', { 'data-pg-lkworknone': '' }, score > 0 ? '缩略图未下载' : '没打分'))
+}
+
 function LookupSheet({ onClose, say, theme = '' }) {
   const [msgs, setMsgs] = React.useState(() => {
     try {
-      const raw = sessionStorage.getItem('pixiv-gallery.lookup.chat')
+      const raw = localStorage.getItem('pixiv-gallery.lookup.chat')
       const arr = raw ? JSON.parse(raw) : []
-      return Array.isArray(arr) ? arr.slice(-40) : []
+      const list = Array.isArray(arr) ? arr.slice(-40) : []
+      return list.map(lkSlimMsg)
     } catch (e) { return [] }
   })
   const [input, setInput] = React.useState('')
@@ -8104,11 +8388,90 @@ function LookupSheet({ onClose, say, theme = '' }) {
   const [myScore, setMyScore] = React.useState('')
   const [scoreMsg, setScoreMsg] = React.useState('')
   const [libName, setLibName] = React.useState({})
+  const [where, setWhere] = React.useState({})
+  /* 聊天框背景：每次打开随机挑一张内置图；设成指定/自定义就固定下来 */
+  const [bgPick, setBgPick] = React.useState(null)
+  /* 窗口尺寸：默认 16:9（宽按视口算），拖动右下角可改，localStorage 记住 */
+  const lkFit = () => {
+    const w = Math.min(Math.round(((typeof window !== 'undefined' ? window.innerWidth : 1400) * 0.86)), 1180)
+    const h = Math.min(Math.round(w * 9 / 16), Math.round(((typeof window !== 'undefined' ? window.innerHeight : 900) || 900) * 0.9))
+    return { w, h }
+  }
+  const [lkSize, setLkSize] = React.useState(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem('pixiv-gallery.lookupsize') || 'null')
+      if (v && Number(v.w) >= 560 && Number(v.h) >= 360) return { w: Number(v.w), h: Number(v.h) }
+    } catch { /* 坏数据就当没存过 */ }
+    return lkFit()
+  })
+  const lkDrag = React.useRef(null)
+  const startResize = (e) => {
+    e.preventDefault(); e.stopPropagation()
+    lkDrag.current = { x: e.clientX, y: e.clientY, w: lkSize.w, h: lkSize.h }
+    const move = (ev) => {
+      const s = lkDrag.current
+      if (!s) return
+      const w = Math.max(560, Math.min(window.innerWidth - 24, s.w + (ev.clientX - s.x)))
+      const h = Math.max(360, Math.min(window.innerHeight - 24, s.h + (ev.clientY - s.y)))
+      setLkSize({ w: Math.round(w), h: Math.round(h) })
+    }
+    const up = () => {
+      lkDrag.current = null
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setLkSize((cur) => {
+        try { localStorage.setItem('pixiv-gallery.lookupsize', JSON.stringify(cur)) } catch { /* 配额满了就算了 */ }
+        return cur
+      })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+  const resetSize = () => {
+    const v = lkFit()
+    setLkSize(v)
+    try { localStorage.setItem('pixiv-gallery.lookupsize', JSON.stringify(v)) } catch { /* ignore */ }
+  }
   const listRef = React.useRef(null)
-  /* 这份对话在同一枚渲染进程里一直留着（整个 DSH 退出才清），刷新也不丢 */
   React.useEffect(() => {
-    try { sessionStorage.setItem('pixiv-gallery.lookup.chat', JSON.stringify(msgs.slice(-40))) } catch (e) { /* 存不下就算了 */ }
+    let alive = true
+    api('/bg/list').then((r) => {
+      if (!alive) return
+      const items = (r && r.items) || []
+      const cur = String((r && r.current) || 'random')
+      const wrap = (m) => (m ? { ...m, url: BASE + '/bg/file?id=' + enc(m.id) } : null)
+      let pick = null
+      if (cur === 'none') pick = null
+      else if (cur === 'custom') pick = { id: 'custom', name: '自定义背景', credit: '', href: '', url: BASE + '/bg/custom' }
+      else if (/^b\d+$/.test(cur)) pick = wrap(items.find((x) => x.id === cur))
+      else if (items.length) pick = wrap(items[Math.floor(Math.random() * items.length)])
+      setBgPick(pick)
+    }).catch(() => { /* 取不到清单就不放背景，聊天照常 */ })
+    return () => { alive = false }
+  }, [])
+  /* 关掉检索不会清；只有 DSH 整个进程换了（bootId 变了）才清一次 */
+  React.useEffect(() => {
+    const slim = msgs.map(lkSlimMsg)
+    /* 关掉检索不会清；写不进去时先砍最旧几条再试，别整段丢失 */
+    for (let keep = 40; keep >= 4; keep -= 4) {
+      try {
+        localStorage.setItem('pixiv-gallery.lookup.chat', JSON.stringify(slim.slice(-keep)))
+        return
+      } catch (e) { /* 配额不够，继续砍 */ }
+    }
   }, [msgs])
+  React.useEffect(() => {
+    let alive = true
+    api('/status').then((st) => {
+      if (!alive) return
+      const cur = String((st && st.bootId) || '')
+      if (!cur) return
+      const seen = (() => { try { return localStorage.getItem('pixiv-gallery.lookup.boot') || '' } catch (e) { return '' } })()
+      if (seen && seen !== cur) { try { localStorage.removeItem('pixiv-gallery.lookup.chat') } catch (e) { /* ignore */ } setMsgs([]) }
+      try { localStorage.setItem('pixiv-gallery.lookup.boot', cur) } catch (e) { /* ignore */ }
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
   React.useEffect(() => { const el = listRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs, asking])
 
   const loadCols = React.useCallback(async () => {
@@ -8242,6 +8605,21 @@ function LookupSheet({ onClose, say, theme = '' }) {
       const items = (r && r.items) || []
       setRes({ kind: String((r && r.kind) || 'illust'), items })
       setIdx(0)
+      if (items.length) {
+        const ids = items.map((x) => String(x.id)).filter(Boolean)
+        api('/work/where', { ids }).then((w2) => {
+          const map = {}
+          for (const it of ((w2 && w2.items) || [])) map[String(it.id)] = it
+          setWhere(map)
+        }).catch(() => {})
+      }
+      if (items.length) {
+        setMsgs((prev) => prev.concat([{
+          role: 'assistant',
+          text: '查到 ' + items.length + ' 件：' + items.slice(0, 3).map((x) => '「' + String(x.title || '无题') + '」#' + x.id).join('、') + (items.length > 3 ? ' 等' : ''),
+          wl: items.slice(0, 8).map((x) => ({ id: String(x.id), title: String(x.title || '无题') })),
+        }]))
+      }
       setMsg(items.length ? ('查到 ' + items.length + ' 件') : '没查到，换个 pid 或网址试试')
     } catch (e) {
       setRes(null)
@@ -8261,15 +8639,29 @@ function LookupSheet({ onClose, say, theme = '' }) {
     const it = cur
     if (!it || v === '') return
     const nm = libName[String(it.id)] || ''
-    if (!nm) { setScoreMsg('这件还没进作品库 —— 先点「收进来」，再打分'); setMyScore(''); return }
     setScoreMsg('正在打分…')
     try {
-      const r = await api('/rate-lib', { name: nm, id: String(it.id), score: Number(v) })
+      /* 已进库的走 /rate-lib；还没收录的直接打 —— 分数先记在 quickScores，收录时带过去 */
+      const r = nm
+        ? await api('/rate-lib', { name: nm, id: String(it.id), score: Number(v) })
+        : await api('/work/score', { id: String(it.id), score: Number(v) })
       setMyScore(String(v))
-      setScoreMsg('已打 ' + Number(v) + ' 分' + (r && r.name ? '（作品库：' + String(r.name).slice(0, 26) + '）' : ''))
+      setScoreMsg('已打 ' + Number(v) + ' 分'
+        + (r && r.autoDownload ? ' · 达到自动下载分，后台开始下原图' : '')
+        + (nm ? '' : '（还没收录也能打，分数会跟着走到作品库）'))
       setRes((old) => (old ? { ...old, items: old.items.map((x) => (String(x.id) === String(it.id) ? { ...x, score: Number(v) } : x)) } : old))
+      setMsgs((prev) => {
+        for (let i = prev.length - 1; i >= 0; i -= 1) {
+          if (prev[i] && Array.isArray(prev[i].wl)) {
+            const cp = prev.slice()
+            cp[i] = { ...prev[i], wl: prev[i].wl.map((x) => (String(x.id) === String(it.id) ? { ...x, score: Number(v) } : x)) }
+            return cp
+          }
+        }
+        return prev
+      })
     } catch (e) {
-      setScoreMsg('打不了分：' + String((e && e.message) || e) + ' —— 先点「收进来」进作品库，再打分')
+      setScoreMsg('打不了分：' + String((e && e.message) || e))
     }
   }
 
@@ -8278,10 +8670,19 @@ function LookupSheet({ onClose, say, theme = '' }) {
     const pick = which === 'all' ? items.slice(0, 40) : (items[idx] ? [items[idx]] : [])
     const ids = pick.map((x) => String(x.id)).filter(Boolean)
     if (!ids.length) { setMsg('还没有查到的作品'); return }
-    setBusy('c'); setMsg('正在下载并收录（' + ids.length + ' 件）…')
+    setBusy('c'); setMsg('正在收进来（先存缩略图，' + pick.length + ' 件）…')
     try {
-      const r = await api('/work/quick-collect', { ids, collection: coll || '', newCard: !!newCard, cardName: card || '' })
-      const bits = ['收进作品库 ' + ((r && r.saved) || 0) + ' 件']
+      const r = await api('/work/collect-quick', {
+        items: pick.map((x) => ({
+          id: String(x.id), title: x.title, artist: x.artist, artistId: x.artistId,
+          pages: x.pages, rating: x.rating, xRestrict: x.xRestrict, tags: x.tags,
+        })),
+        collection: coll || '',
+        newCard: !!newCard,
+        cardName: card || '',
+        score: myScore === '' ? undefined : Number(myScore),
+      })
+      const bits = ['收进作品库 ' + ((r && r.saved) || 0) + ' 件（缩略图已就位，原图等达标再下）']
       if (r && r.collection) bits.push('收藏夹「' + r.collection + '」')
       if (r && r.round) bits.push('新卡片 ' + r.round)
       if (r && r.failed && r.failed.length) bits.push('失败 ' + r.failed.length + ' 件：' + String((r.failed[0] && r.failed[0].error) || '').slice(0, 60))
@@ -8290,7 +8691,8 @@ function LookupSheet({ onClose, say, theme = '' }) {
       loadCols()
       loadLibMap()
     } catch (e) {
-      setMsg('收录失败：' + String((e && e.message) || e))
+      const m = String((e && e.message) || e)
+      setMsg(/404|not found/i.test(m) ? '这条要重启一次 DSH 才生效（服务端新接口还没加载）' : ('收录失败：' + m))
     } finally { setBusy('') }
   }
 
@@ -8302,10 +8704,15 @@ function LookupSheet({ onClose, say, theme = '' }) {
     'data-pg-modal': '', 'data-pg-lookupsheet': '', 'data-pg-theme': theme || undefined,
     onClick: (e) => { if (e.target === e.currentTarget) onClose() },
   },
-  h('div', { 'data-pg-lkpanel': '' },
+  h('div', { 'data-pg-lkpanel': '', 'data-pg-lkbg-on': bgPick ? '' : undefined, style: { width: lkSize.w + 'px', height: lkSize.h + 'px' } },
+    bgPick ? h('div', { 'data-pg-lkbg': '', 'aria-hidden': 'true' },
+      h('img', { src: bgPick.url, alt: '', onError: () => setBgPick(null) }),
+      h('div', { 'data-pg-lkbgtint': '' })) : null,
     h('div', { 'data-pg-lkhead': '' },
       h('div', { 'data-pg-lktitle': '' }, '画廊检索'),
       h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose }, '关闭')),
+    h('div', { 'data-pg-lkgrip': '', title: '拖动调整窗口大小 · 双击回到 16:9', onPointerDown: startResize, onDoubleClick: resetSize }),
+    h('div', { 'data-pg-lkmech': '' }, '这个聊天框的机制：历史只把文字和作品编号存在本机（贴进来的图片太大，不存）；查过的作品只有在「打过分」并且「缩略图已下载到本地」时才会显示缩略图，否则会标「缩略图未下载」。关掉面板不会清，整台 DSH 重启才清一次。'),
     h('div', { 'data-pg-lkchat': '', ref: listRef },
       msgs.length === 0
         ? h('div', { 'data-pg-lkhello': '' },
@@ -8315,6 +8722,9 @@ function LookupSheet({ onClose, say, theme = '' }) {
       msgs.map((m, i3) => h('div', { key: 'lk' + i3, 'data-pg-lkrow': m.role === 'user' ? 'me' : 'ai' },
         (m.imgs || []).length
           ? h('div', { 'data-pg-lkimgs': '' }, (m.imgs || []).map((s2, j) => h('img', { key: 'mi' + j, src: s2, alt: '' })))
+          : (m.imgN ? h('div', { 'data-pg-lkimgph': '' }, '（这一轮带了 ' + m.imgN + ' 张图；图片不进历史，只留文字）') : null),
+        (m.wl || []).length
+          ? h('div', { 'data-pg-lkworks': '' }, (m.wl || []).map((w2) => h(LkWorkThumb, { key: 'lkw' + w2.id, w: w2 })))
           : null,
         h('div', { 'data-pg-lkbubble': m.bad ? 'bad' : m.role }, m.text || ''))),
       asking ? h('div', { 'data-pg-lkrow': 'ai' }, h('div', { 'data-pg-lkbubble': 'ai' }, '想一下…')) : null),
@@ -8329,6 +8739,17 @@ function LookupSheet({ onClose, say, theme = '' }) {
             + (cur.rating === 'r18' ? ' · R-18' : cur.rating === 'r18g' ? ' · R-18G' : '')
             + ((cur.bookmarks || cur.views) ? (' · 收藏 ' + (cur.bookmarks || 0) + ' / 浏览 ' + (cur.views || 0)) : '')),
           h('div', { 'data-pg-lktags': '' }, (cur.tags || []).slice(0, 16).join(' / ')),
+          (() => {
+            const wi = where[String(cur.id)]
+            if (!wi) return null
+            const bits = []
+            if (wi.library) bits.push('已在作品库' + (wi.score > 0 ? ' · ' + wi.score + ' 分' : ' · 还没打分'))
+            if ((wi.collections || []).length) bits.push('收藏夹：' + wi.collections.join('、'))
+            const c0 = (wi.cards || [])[0]
+            if (c0) bits.push('已在卡片 ' + String(c0.round).slice(0, 10) + (c0.score > 0 ? '（' + c0.score + ' 分）' : ''))
+            if (!bits.length) bits.push('作品库、卡片里都还没有这件')
+            return h('div', { 'data-pg-lkwhere': '' }, bits.join(' · '))
+          })(),
           h('a', {
             'data-pg-lklink': '', href: cur.url || ('https://www.pixiv.net/artworks/' + cur.id),
             target: '_blank', rel: 'noreferrer',
@@ -8346,13 +8767,13 @@ function LookupSheet({ onClose, say, theme = '' }) {
             h('select', { 'data-pg-in': '', value: coll, onChange: (e) => setColl(e.target.value) },
               h('option', { value: '' }, '（只进作品库）'),
               cols.map((c) => h('option', { key: 'lkc' + c.name, value: c.name }, (c.display || c.name) + ' · ' + (c.count || 0)))),
-            h('input', {
-              'data-pg-in': '', type: 'text', value: card, placeholder: '新卡片名（可留空）',
-              onChange: (e) => setCard(e.target.value), style: { width: '156px' },
-            }),
+            newCard ? h('input', {
+              'data-pg-in': '', type: 'text', value: card, placeholder: '给这张卡片起个名（可留空）',
+              onChange: (e) => setCard(e.target.value), style: { width: '190px' },
+            }) : null,
             h('label', { 'data-pg-lkcheck': '' },
               h('input', { type: 'checkbox', checked: newCard, onChange: (e) => setNewCard(e.target.checked) }),
-              '顺便建一张自定义卡片'),
+              '为这个作品新建一张卡片'),
             h('button', {
               'data-pg-btn': '', 'data-primary': '', type: 'button', disabled: busy === 'c',
               style: { opacity: busy === 'c' ? 0.6 : 1 },
@@ -8387,6 +8808,13 @@ function LookupSheet({ onClose, say, theme = '' }) {
         onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(tagIn, true) } },
       }),
       h('button', { 'data-pg-btn': '', type: 'button', disabled: tagBusy || !tagIn.trim(), onClick: () => addTag(tagIn, true) }, '加')),
+    bgPick
+      ? h('div', { 'data-pg-lkcredit': '' },
+        h('span', { 'data-pg-lkcredname': '' }, '背景：' + String(bgPick.name || '')),
+        bgPick.href
+          ? h('a', { 'data-pg-lkcredlink': '', href: bgPick.href, target: '_blank', rel: 'noreferrer' }, '出处 ↗')
+          : h('span', { 'data-pg-lkcredlink': '', 'data-off': '' }, String(bgPick.credit || '出处未确认')))
+      : null,
     h('div', { 'data-pg-lkinput': '' },
       imgs.length
         ? h('div', { 'data-pg-lkimgs': '' }, imgs.map((s3, j) => h('img', {
@@ -8413,7 +8841,7 @@ function LookupSheet({ onClose, say, theme = '' }) {
         h('span', { 'data-pg-lkmeta': '' }, '粘 pid / 网址就查作品，写问题就用你此刻的模型回答 · Ctrl+V 粘图')))))
 }
 
-function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = null, openPanel = '' }) {
+function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = null, openPanel = '', autoReadPrefs = false }) {
       const [panel, setPanel] = React.useState('')
       /* 从跑轮前的拦截弹窗跳进来时，直接落在「视觉后端」那一栏 */
       React.useEffect(() => { if (openPanel) setPanel(openPanel) }, [openPanel])
@@ -8619,6 +9047,8 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       const [scoreLabels, setLabels] = React.useState(DEFAULT_LABELS)
       const [labelColors, setLabelColors] = React.useState(DEFAULT_LABEL_COLORS)
       const [autoDownload, setAutoDownload] = React.useState(true)
+      /* 图片直连兜底：只补图，不参与抓图，默认开 */
+      const [imageDirect, setImageDirect] = React.useState(true)
       const [autoDownloadMinScore, setAutoMinScore] = React.useState(9)
   const [lowTrashOn, setLowTrashOn] = React.useState(true)
   const [lowThreshold, setLowThreshold] = React.useState(5)
@@ -8687,15 +9117,18 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
     const pick = which === 'all' ? items.slice(0, 40) : (items[lkIdx] ? [items[lkIdx]] : [])
     const ids = pick.map((x) => String(x.id)).filter(Boolean)
     if (!ids.length) { setLkMsg('还没有查到的作品'); return }
-    setLkBusy('c'); setLkMsg('正在下载并收录（' + ids.length + ' 件）…')
+    setLkBusy('c'); setLkMsg('正在收进来（先存缩略图，' + pick.length + ' 件）…')
     try {
-      const r = await api('/work/quick-collect', {
-        ids,
+      const r = await api('/work/collect-quick', {
+        items: pick.map((x) => ({
+          id: String(x.id), title: x.title, artist: x.artist, artistId: x.artistId,
+          pages: x.pages, rating: x.rating, xRestrict: x.xRestrict, tags: x.tags,
+        })),
         collection: lkColl || '',
         newCard: Boolean(lkNewCard),
         cardName: lkCard || '',
       })
-      const bits = ['收进作品库 ' + (r.saved || 0) + ' 件']
+      const bits = ['收进作品库 ' + (r.saved || 0) + ' 件（缩略图已就位）']
       if (r.collection) bits.push('收藏夹「' + r.collection + '」')
       if (r.round) bits.push('新卡片 ' + r.round)
       if (Array.isArray(r.failed) && r.failed.length) bits.push('失败 ' + r.failed.length + ' 件')
@@ -8800,6 +9233,11 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       React.useEffect(() => { loadAcc() }, [loadAcc])
       const [projectUrl, setProjectUrl] = React.useState('')
       const [uiTheme, setUiTheme] = React.useState('dark')
+      const [lookupBg, setLookupBg] = React.useState('random')
+      const [bgItems, setBgItems] = React.useState([])
+      const [bgCustom, setBgCustom] = React.useState(false)
+      const [bgMsg, setBgMsg] = React.useState('')
+      const bgFileRef = React.useRef(null)
       const [version, setVersion] = React.useState('0.7.39')
       const [stars, setStars] = React.useState(null)
       const [updateMsg, setUpdateMsg] = React.useState('')
@@ -8885,6 +9323,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           setLabels({ ...SCORE_LABEL_FALLBACK, ...(c.scoreLabels || {}) })
           setLabelColors({ ...DEFAULT_LABEL_COLORS, ...(c.scoreLabelColors || {}) })
           setAutoDownload(c.autoDownload !== false)
+          setImageDirect(c.imageDirect !== false)
         const lt = c.lowScoreTrash || {}
         setLowTrashOn(true)
         setLowThreshold(Number(lt.threshold ?? 5))
@@ -8911,6 +9350,11 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           setAccInterval(Math.max(1, Number(c.workRules?.accSync?.intervalMin) || 30))
           setProjectUrl(String(c.projectUrl || ''))
           setUiTheme(String(c.uiTheme) === 'light' ? 'light' : 'dark')
+          setLookupBg(/^(random|none|custom|b\d+)$/.test(String(c.lookupBg || '')) ? String(c.lookupBg) : 'random')
+          api('/bg/list').then((r2) => {
+            setBgItems((r2 && r2.items) || [])
+            setBgCustom(Boolean(r2 && r2.custom))
+          }).catch(() => { /* 背景清单读不到就只显示随机/无 */ })
           pgApplyTheme(String(c.uiTheme) === 'light' ? 'light' : 'dark')
           setVersion(String(c.version || '0.7.39'))
           setStars(Number.isFinite(Number(c.stars)) ? Number(c.stars) : null)
@@ -8925,6 +9369,25 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       }, [])
       const mb = (n) => `${(Number(n || 0) / 1048576).toFixed(1)} MB`
       const gb = (n) => `${(Number(n || 0) / 1073741824).toFixed(1)} GB`
+      /* 自定义背景：读成本地 base64 再交给服务端落盘（存在数据目录里，重装插件也不丢） */
+      const pickBgFile = (file) => {
+        if (!file) return
+        if (file.size > 12 * 1024 * 1024) { setBgMsg('图太大（上限 12MB），先压到 1600px 宽再来'); return }
+        setBgMsg('正在保存…')
+        const rd = new FileReader()
+        rd.onload = async () => {
+          try {
+            const data = String(rd.result || '').replace(/^data:[^,]*,/, '')
+            await api('/bg/upload', { data })
+            setBgCustom(true)
+            setLookupBg('custom')
+            setBgMsg('已保存，进画廊检索就能看到')
+          } catch (e) { setBgMsg('没存上：' + String((e && e.message) || e)) }
+        }
+        rd.onerror = () => setBgMsg('读不出这个文件')
+        rd.readAsDataURL(file)
+      }
+
       const buildPayload = () => ({
         workspacePaths: paths.split(/\n+/).map((x) => x.trim()).filter(Boolean),
         favoriteTags: tags.split(/[、,，;；\n]+/).map((x) => x.trim()).filter(Boolean),
@@ -8955,6 +9418,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
         scoreLabelColors: labelColors,
         authorRules,
         autoDownload,
+        imageDirect,
         blacklistTags: blacklistText,
         visionBaseUrl,
         visionApiKey,
@@ -8991,6 +9455,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
         showInConversation: true,
         projectUrl,
         uiTheme,
+        lookupBg,
       })
       // 自动保存：改哪个存哪个，不再需要手点「保存」
       React.useEffect(() => {
@@ -9019,8 +9484,8 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       }, [paths, tags, all, autoAdd, trashDays, trashKeep, downloadRoot, fileTemplate, dirTemplate, maxPages, autoCachePages,
         maxImageMB, maxCacheWorks, archiveFormat, followedOnly, mustPush, minPush, dislike,
         runCards, runImages, runKeywords, runBlacklist, prefAuto, scoreStops, scoreLabels, labelColors,
-        authorRules, autoDownload, autoDownloadMinScore, roundScoring, perfectRule, autoSocial, accMode, accInterval,
-        presets, activePreset, lastPresetSwitch, showInSidebar, collapseToMore, projectUrl, kbKeys, blacklistText, uiTheme,
+        authorRules, autoDownload, imageDirect, autoDownloadMinScore, roundScoring, perfectRule, autoSocial, accMode, accInterval,
+        presets, activePreset, lastPresetSwitch, showInSidebar, collapseToMore, projectUrl, kbKeys, blacklistText, uiTheme, lookupBg,
         visionBaseUrl, visionApiKey, visionModel, visionEffort])
       const save = async () => {
         setBusy('save')
@@ -9079,8 +9544,8 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           setUpd({ error: String(e?.message ?? e) })
         } finally { setBusy('') }
       }
-      const readAccountPrefs = async () => {
-        if (!await askPrefStart()) return
+      const readAccountPrefs = async (skipAsk = false) => {
+        if (!skipAsk && !await askPrefStart()) return
         setPrefBusy('read'); setPrefMsg('已开始：正在连接 pixiv…')
         try {
           const started = Date.now()
@@ -9135,6 +9600,12 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           note(String(e?.message ?? e), 'warn')
         } finally { setPrefBusy('') }
       }
+
+      /* 引导里点了「现在就做画像」进来：直接开跑，不再叠一层工序说明卡 */
+      React.useEffect(() => {
+        if (!autoReadPrefs) return
+        void readAccountPrefs(true)
+      }, [])
       const tagList = () => tags.split(/[、,，;；\n]+/).map((x) => x.trim()).filter(Boolean)
       const mergeWords = (a, b) => Array.from(new Set([...(String(a || '').split(/[\s,，;；\n]+/).filter(Boolean)), ...(String(b || '').split(/[\s,，;；\n]+/).filter(Boolean))])).join('\n')
       const uniquePresetName = (list, base) => {
@@ -9864,31 +10335,53 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
           h('span', { 'data-pg-testmark': '' }, st.skipped ? '－' : (st.ok ? '✓' : '✗')),
           h('span', { 'data-pg-testid': '' }, testLabel(st.id)),
           h('span', { 'data-pg-testdetail': '' }, st.detail)))) : null,
-        h('div', { 'data-pg-group': '' }, '下载相关'),
-                field('下载保存地址',
-          h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
-            h('input', { 'data-pg-input': '', value: downloadRoot, placeholder: resolvedRoot || '留空 = 画廊工作区下的 Download', onChange: (e) => setDownloadRoot(e.target.value), style: { flex: 1 } }),
-            h('button', { 'data-pg-btn': '', type: 'button', onClick: () => setPickDir(true) }, '选择目录…'),
-            h('button', { 'data-pg-btn': '', type: 'button', onClick: async () => {
-              try { await api('/open', { what: downloadRoot ? 'dir' : 'download', path: downloadRoot || undefined }); say('已在资源管理器里打开', 'good') }
-              catch (e) { say(String(e?.message ?? e), 'warn') }
-            } }, '打开目录')),
-          `画廊自己下载的落点；留空 = 画廊工作区下的 Download（当前：${resolvedRoot || '—'}）`),
-        field('图片文件名格式', h('input', { 'data-pg-input': '', value: fileTemplate, onChange: (e) => setFileTemplate(e.target.value) }),
-          '可用 {artistId} {artist} {title} {id} {page}；默认与刷Pixiv 一致'),
-        field('目录结构', h('input', { 'data-pg-input': '', value: dirTemplate, onChange: (e) => setDirTemplate(e.target.value) }),
-          '可用 {kind} {artist} {artistId} {title} {id}，用 / 分层；例如 {kind}/{artist}/{title}_{id}'),
-        field('每件最多下载几页（全页补全）', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 200, value: maxPages, onChange: (e) => setMaxPages(e.target.value) }),
-          '下载原图时按作品总页数全页补全；默认 200（通常等于不限制）'),
-        field('跑一轮自动缓存前几页缩略图', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 40, value: autoCachePages, onChange: (e) => setAutoCachePages(e.target.value) }),
-          '默认 20。跑完一轮后台缓存这些页，多图平铺/灯箱会直接读缓存；后面的页只有点“补全”才继续取。原图仍需手动下载或命中自动下载规则。'),
-        h('div', { 'data-pg-row2': '' },
-          field('单张图片上限（MB）', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 4096, value: maxImageMB, onChange: (e) => setMaxImageMB(e.target.value) })),
-          field('作品缓存上限（件）', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 100000, value: maxCacheWorks, onChange: (e) => setMaxCacheWorks(e.target.value) }))),
-        field('压缩包默认格式', h('select', { 'data-pg-input': '', value: archiveFormat, onChange: (e) => setArchiveFormat(e.target.value) },
-          ['7z', 'zip', 'rar'].map((x) => h('option', { key: x, value: x }, x.toUpperCase()))),
-          '多图“全部下载并打包”时使用；RAR 需要本机安装 WinRAR'),
-        h('div', { 'data-pg-note': '' }, `已下载 ${stats.workCount} 件 · 缓存 ${mb(stats.cacheBytes)} · 磁盘剩余 ${gb(stats.diskFree)}`),
+        h('div', { 'data-pg-dlbox': '' },
+          h('div', { 'data-pg-group': '' }, '下载相关'),
+                  field('下载保存地址',
+            h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+              h('input', { 'data-pg-input': '', value: downloadRoot, placeholder: resolvedRoot || '留空 = 画廊工作区下的 Download', onChange: (e) => setDownloadRoot(e.target.value), style: { flex: 1 } }),
+              h('button', { 'data-pg-btn': '', type: 'button', onClick: () => setPickDir(true) }, '选择目录…'),
+              h('button', { 'data-pg-btn': '', type: 'button', onClick: async () => {
+                try { await api('/open', { what: downloadRoot ? 'dir' : 'download', path: downloadRoot || undefined }); say('已在资源管理器里打开', 'good') }
+                catch (e) { say(String(e?.message ?? e), 'warn') }
+              } }, '打开目录')),
+            `画廊自己下载的落点；留空 = 画廊工作区下的 Download（当前：${resolvedRoot || '—'}）`),
+          field('图片文件名格式', h('input', { 'data-pg-input': '', value: fileTemplate, onChange: (e) => setFileTemplate(e.target.value) }),
+            '可用 {artistId} {artist} {title} {id} {page}；默认与刷Pixiv 一致'),
+          field('目录结构', h('input', { 'data-pg-input': '', value: dirTemplate, onChange: (e) => setDirTemplate(e.target.value) }),
+            '可用 {kind} {artist} {artistId} {title} {id}，用 / 分层；例如 {kind}/{artist}/{title}_{id}'),
+          field('每件最多下载几页（全页补全）', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 200, value: maxPages, onChange: (e) => setMaxPages(e.target.value) }),
+            '下载原图时按作品总页数全页补全；默认 200（通常等于不限制）'),
+          field('跑一轮自动缓存前几页缩略图', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 40, value: autoCachePages, onChange: (e) => setAutoCachePages(e.target.value) }),
+            '默认 20。跑完一轮后台缓存这些页，多图平铺/灯箱会直接读缓存；后面的页只有点“补全”才继续取。原图仍需手动下载或命中自动下载规则。'),
+          h('div', { 'data-pg-row2': '' },
+            field('单张图片上限（MB）', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 4096, value: maxImageMB, onChange: (e) => setMaxImageMB(e.target.value) })),
+            field('作品缓存上限（件）', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 100000, value: maxCacheWorks, onChange: (e) => setMaxCacheWorks(e.target.value) }))),
+          field('压缩包默认格式', h('select', { 'data-pg-input': '', value: archiveFormat, onChange: (e) => setArchiveFormat(e.target.value) },
+            ['7z', 'zip', 'rar'].map((x) => h('option', { key: x, value: x }, x.toUpperCase()))),
+            '多图“全部下载并打包”时使用；RAR 需要本机安装 WinRAR'),
+          h('div', { 'data-pg-note': '' }, `已下载 ${stats.workCount} 件 · 缓存 ${mb(stats.cacheBytes)} · 磁盘剩余 ${gb(stats.diskFree)}`),
+          h('div', { 'data-pg-section2': '', 'data-pg-dlsec': '', style: { color: 'var(--pg-fg1, #e8eef6)' } }, '自动下载'),
+          h('div', { 'data-pg-row3': '' },
+            h('label', { 'data-pg-check': '' },
+              h('input', { type: 'checkbox', checked: autoDownload, onChange: (e) => setAutoDownload(e.target.checked) }),
+              '评分达标后下载到本地'),
+            field('几分及以上', h('input', { 'data-pg-input': '', type: 'number', min: 0, max: 10, step: 0.5, value: autoDownloadMinScore, onChange: (e) => setAutoMinScore(e.target.value) }))),
+          h('div', { 'data-pg-note2': '' }, '只有新进作品库且评分达标的作品才落盘；本地已有文件的不重复下载。'),
+          h('div', { 'data-pg-note2': '', 'data-pg-note-auto': '' }, '后台每 15 分钟会自动检查一次：已是达标分数、还没下载的作品，会把原图直接下到保存位置（每次最多 6 件，网络不通时自动暂停 10 分钟）。打开作品库、保存一轮时也会顺手补一次，所以不用你手动点。'),
+          h('div', { 'data-pg-section2': '', 'data-pg-dlsec': '', style: { color: 'var(--pg-fg1, #e8eef6)' } }, '图片直连兜底'),
+          h('div', { 'data-pg-row3': '' },
+            h('label', {
+              'data-pg-check': '',
+              'data-pg-tip': '代理和直连都失败时，缩略图、多图作品的每一页改走 pixiv 图片站（i.pximg.net）的固定 IP 直连：不发 SNI、不校验证书。\n\n只补图，不能参与抓图——跑一轮走的是 API（www.pixiv.net / app-api），那条路必须经过代理。\n\n默认开启，开着不影响代理：只有代理整体失败后才会走到这里；这条路自己也失败时会静默 5 分钟。',
+            },
+              h('input', { type: 'checkbox', checked: imageDirect, onChange: (e) => setImageDirect(e.target.checked) }),
+              '代理挂了也尽量把图补回来（只补图，不能参与抓图）')),
+          h('div', { 'data-pg-note2': '' },
+            '思路来自开源项目 ',
+            h('a', { href: 'https://github.com/Notsfsssf/pixez-flutter', target: '_blank', rel: 'noreferrer', style: { color: 'inherit', textDecoration: 'underline' } }, 'PixEz Flutter'),
+            '：它用「固定 IP + 不带 SNI」实现直连 pixiv。这里只借这一招，且只用于图片站，不碰 API。'),
+        ),
         h('div', { 'data-pg-group': '', 'data-blood': '', style: { color: '#e11d48' } }, '跑一轮/跑多轮预设·筛选机制'),
         presetBox,
 
@@ -9997,7 +10490,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
         h('div', { 'data-pg-group': '' }, '个人偏好设置'),
         h('div', { 'data-pg-box': 'group' },
           h('h3', { 'data-pg-section2': '', 'data-cyan': '' }, '用户的口味画像分析'),
-          h('div', { 'data-pg-note2': '', style: { fontSize: '13px', lineHeight: '1.9', color: '#e9eef9', maxWidth: '1080px', margin: '6px 0 10px' } }, '实时分析当前用户的喜好。每完成 3 个卡片就重新计算一次推荐度。画像样本以作品库里的 9/10 分作品为主（约 12 张），再补高分作者的代表作和最近几轮的高分卡片；评分和入库作品越多，结论越准。低分标签会被明显压低，反复打 3 分以下的标签不会「照样推荐」。算法需要不断优化，请尽情提供意见。'),
+          h('div', { 'data-pg-note2': '', style: { fontSize: '13px', lineHeight: '1.9', maxWidth: '1080px', margin: '6px 0 10px' } }, '实时分析当前用户的喜好。每完成 3 个卡片就重新计算一次推荐度。画像样本以作品库里的 9/10 分作品为主（约 12 张），再补高分作者的代表作和最近几轮的高分卡片；评分和入库作品越多，结论越准。低分标签会被明显压低，反复打 3 分以下的标签不会「照样推荐」。算法需要不断优化，请尽情提供意见。'),
           h(TastePanel, { say }),
           prefBox,
   
@@ -10224,14 +10717,6 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
               h('option', { value: '0' }, '一律公开'),
               h('option', { value: '1' }, '一律私密')))),
           h('div', { 'data-pg-note2': '' }, '跟随分级 = 全年龄公开收藏、R18·R18G 私密；只对能对上 pixiv 作品 id 的作品生效。'),
-          h('div', { 'data-pg-section2': '', style: { color: 'var(--dsw-alias-label-primary,#ffffff)' } }, '自动下载'),
-          h('div', { 'data-pg-row3': '' },
-            h('label', { 'data-pg-check': '' },
-              h('input', { type: 'checkbox', checked: autoDownload, onChange: (e) => setAutoDownload(e.target.checked) }),
-              '评分达标后下载到本地'),
-            field('几分及以上', h('input', { 'data-pg-input': '', type: 'number', min: 0, max: 10, step: 0.5, value: autoDownloadMinScore, onChange: (e) => setAutoMinScore(e.target.value) }))),
-          h('div', { 'data-pg-note2': '' }, '只有新进作品库且评分达标的作品才落盘；本地已有文件的不重复下载。'),
-          h('div', { 'data-pg-note2': '', 'data-pg-note-auto': '' }, '后台每 15 分钟会自动检查一次：已是达标分数、还没下载的作品，会把原图直接下到保存位置（每次最多 6 件，网络不通时自动暂停 10 分钟）。打开作品库、保存一轮时也会顺手补一次，所以不用你手动点。'),
   
           h('div', { 'data-pg-section2': '' }, '回收站'),
           h('div', { 'data-pg-row2': '' },
@@ -10301,6 +10786,45 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
               'data-pg-seg': uiTheme === 'light' ? 'on' : '',
               onClick: () => { setUiTheme('light'); pgApplyTheme('light') },
             }, '浅色 / 白天')),
+          h('div', { 'data-pg-section': '' }, '个性化 · 检索画廊背景'),
+          h('div', { 'data-pg-note2': '' }, '只作用于「画廊检索」的聊天框：进面板时随机换一张，上面压一层半透明遮罩，不影响看字。建议用横图（1600×900 以上最合适，单张 12MB 以内）；选「自定义」之后就不再随机，也可以随时切回这些内置图。'),
+          h('div', { 'data-pg-bggrid': '' },
+            h('button', {
+              'data-pg-bgcard': '', type: 'button', 'data-on': lookupBg === 'random' ? '' : undefined,
+              title: '每次打开画廊检索随机挑一张',
+              onClick: () => setLookupBg('random'),
+            },
+            h('span', { 'data-pg-bgnone': '' }, '🎲'), h('b', {}, '每次随机')),
+            h('button', {
+              'data-pg-bgcard': '', type: 'button', 'data-on': lookupBg === 'none' ? '' : undefined,
+              title: '不要背景图，回到纯色',
+              onClick: () => setLookupBg('none'),
+            },
+            h('span', { 'data-pg-bgnone': '' }, '∅'), h('b', {}, '不要背景')),
+            bgCustom ? h('button', {
+              'data-pg-bgcard': '', type: 'button', 'data-on': lookupBg === 'custom' ? '' : undefined,
+              title: '你自己上传的那张',
+              onClick: () => setLookupBg('custom'),
+            }, h('img', { src: BASE + '/bg/custom', alt: '' }), h('b', {}, '我的图')) : null,
+            bgItems.map((b) => h('button', {
+              key: 'bg' + b.id, 'data-pg-bgcard': '', type: 'button',
+              'data-on': lookupBg === b.id ? '' : undefined,
+              title: String(b.credit || ''),
+              onClick: () => setLookupBg(b.id),
+            },
+            h('img', { src: BASE + '/bg/file?id=' + enc(b.id), alt: '', loading: 'lazy' }),
+            h('b', {}, String(b.name || b.id)),
+            b.href
+              ? h('a', { 'data-pg-bgcredit': '', href: b.href, target: '_blank', rel: 'noreferrer' }, '出处 ↗')
+              : h('span', { 'data-pg-bgcredit': '', 'data-off': '' }, String(b.credit || '出处未确认'))))),
+          h('div', { 'data-pg-bgrow': '' },
+            h('input', {
+              ref: bgFileRef, type: 'file', accept: 'image/jpeg,image/png,image/webp',
+              style: { display: 'none' },
+              onChange: (e) => { pickBgFile(e.target.files && e.target.files[0]); e.target.value = '' },
+            }),
+            h('button', { 'data-pg-btn': '', type: 'button', onClick: () => { try { bgFileRef.current?.click() } catch (e) { /* ignore */ } } }, '上传自己的图'),
+            h('span', { 'data-pg-lkmeta': '' }, bgMsg || 'jpg / png / webp，横图最好看')),
           h('div', { 'data-pg-section': '' }, '卡片设置'),
           h('label', { 'data-pg-check': '' },
             h('input', { type: 'checkbox', checked: perfectRule.on !== false, onChange: (e) => setPerfectRule({ ...perfectRule, on: e.target.checked }) }),
@@ -10328,7 +10852,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             h('button', { 'data-pg-btn': '', onClick: () => setStops(normStops([...scoreStops, { score: 5, color: '#888888' }])) }, '+ 锚点')),
   
           h('div', { 'data-pg-section': '' }, '个性化 · 评价文案'),
-          h('div', { 'data-pg-note2': '' }, '作品库卡片第三行最右边那个评价的文字和颜色：≤6 分、7 分、8 分、9 分、10 分各一档，全部是普通文字，颜色都可以自己改。'),
+          h('div', { 'data-pg-note2': '' }, '作品库卡片第三行最右边那个评价的文字和颜色：≤6 分、7 分、8 分、9 分、10 分各一档，颜色都能自己改。10 分默认是「炫彩」——文字与描边走彩虹渐变、内部透明；点「炫彩」可切回，选颜色则以选的颜色为准。'),
           h('div', { 'data-pg-row3': '' },
             ...[6, 7, 8, 9, 10].map((k) => field(`${k} 分${k === 10 ? '（满分）' : k === 6 ? '及以下' : ''}`,
               h('div', { 'data-pg-labelrow': '' },
@@ -10340,10 +10864,21 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
                 h('input', {
                   type: 'color',
                   title: `${k} 分评价的文字颜色`,
-                  value: labelColors[k] || DEFAULT_LABEL_COLORS[k],
+                  value: /^#[0-9a-f]{6}$/i.test(String(labelColors[k] || '')) ? labelColors[k] : (k === 10 ? '#ffd83d' : DEFAULT_LABEL_COLORS[k]),
                   onChange: (e) => setLabelColors((x) => ({ ...x, [k]: e.target.value })),
                 }),
-                h('span', { 'data-pg-stopdot': '', style: { background: labelColors[k] || DEFAULT_LABEL_COLORS[k] } }))))),
+                k === 10 ? h('button', {
+                  'data-pg-btn': '', type: 'button',
+                  'data-on': String(labelColors[k] || DEFAULT_LABEL_COLORS[k]) === 'rainbow' ? '' : undefined,
+                  title: '满分的文字与描边都走彩虹渐变，内部保持透明',
+                  onClick: () => setLabelColors((x) => ({ ...x, [k]: 'rainbow' })),
+                }, '炫彩') : null,
+                h('span', {
+                  'data-pg-stopdot': '',
+                  style: { background: String(labelColors[k] || DEFAULT_LABEL_COLORS[k]) === 'rainbow'
+                    ? 'conic-gradient(#ff5fa2,#ffb703,#ffe066,#7be0a3,#5bc8ff,#a78bfa,#ff5fa2)'
+                    : (labelColors[k] || DEFAULT_LABEL_COLORS[k]) },
+                }))))),
   
         )),
 
@@ -10882,11 +11417,60 @@ function GalleryTab2({ onScopeChanged }) {
       }, [])
       const [settings, setSettings] = React.useState(false)
       const [lookupOpen, setLookupOpen] = React.useState(false)
+      const [fbOpen, setFbOpen] = React.useState(false)
+      const [profileNudge, setProfileNudge] = React.useState(false)
+      const [nudgeRun, setNudgeRun] = React.useState(false) // 引导里选了「现在就做」→ 进设置页直接开跑
       const [updPrompt, setUpdPrompt] = React.useState(null)
       const [updSheet, setUpdSheet] = React.useState(null) // 点顶栏版本号时直接开的「检查更新」弹窗
       const [updIntent, setUpdIntent] = React.useState(null)
       const [visionBlock, setVisionBlock] = React.useState(null) // 开跑前体检没过：没有任何真能看图的模型
       const [panelIntent, setPanelIntent] = React.useState('') // 跳设置页时直接落在哪一栏（'vision'）
+
+      /* 画廊检索的历史：DSH 换进程后第一次进主界面就清掉，别等主人点开检索面板（那才是「删得不够快」）。
+         同一个进程里关面板、切页签、刷新界面都不会清。 */
+      React.useEffect(() => {
+        let alive = true
+        api('/status').then((st) => {
+          if (!alive) return
+          const cur = String((st && st.bootId) || '')
+          if (!cur) return
+          const seen = (() => { try { return localStorage.getItem('pixiv-gallery.lookup.boot') || '' } catch { return '' } })()
+          if (seen && seen !== cur) { try { localStorage.removeItem('pixiv-gallery.lookup.chat') } catch { /* ignore */ } }
+          try { localStorage.setItem('pixiv-gallery.lookup.boot', cur) } catch { /* ignore */ }
+        }).catch(() => {})
+        return () => { alive = false }
+      }, [])
+
+      /* 新用户画像引导：登录 pixiv 后回到主界面或设置里弹一次，只弹一次（localStorage 记）。
+         已经点过「不了」或「现在就做」就不再问；没登录过 pixiv 也不问。 */
+      React.useEffect(() => {
+        let alive = true
+        let asked = ''
+        try { asked = localStorage.getItem('pixiv-gallery.nudge.profile') || '' } catch { /* 隐私模式读不到就当没问过 */ }
+        if (asked === '1') return () => { alive = false }
+        ;(async () => {
+          try {
+            const cf = await api('/config')
+            if (!alive) return
+            const dep = (cf && cf.pixivDep) || (cf && cf.config && cf.config.pixivDep) || null
+            const logged = !!dep && dep.pluginInstalled !== false && dep.authState === 'ok'
+            if (logged) setProfileNudge(true)
+          } catch { /* 读不到登录态就不打扰 */ }
+        })()
+        return () => { alive = false }
+      }, [settings])
+
+      const answerNudge = (mode) => {
+        try { localStorage.setItem('pixiv-gallery.nudge.profile', '1') } catch { /* ignore */ }
+        setProfileNudge(false)
+        if (mode === 'run') {
+          setNudgeRun(true)
+          setSettings(true)
+          say('好，这就开始读取账号偏好：约 3 分钟，期间可以照常打分', 'good')
+        } else {
+          say('好的，之后想做了，在设置里点「读取当前账号偏好」就行', 'good')
+        }
+      }
       /* 进主界面默认在页面最上方（宿主的页签会记住滚动位置，这里每次进来都归零） */
       React.useEffect(() => {
         /* 下一帧再归零一次：rAF 里此时布局已算完，宿主的自动滚动也落地了，按回去最稳 */
@@ -11930,6 +12514,7 @@ function GalleryTab2({ onScopeChanged }) {
           setTrashPick({})
           setTrashArm('')
           await loadTrash()
+          void loadDisk(true)
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const restoreTrashToCard = async (items) => {
@@ -11941,6 +12526,7 @@ function GalleryTab2({ onScopeChanged }) {
           setTrashPick({})
           setTrashArm('')
           await loadTrash()
+          void loadDisk(true)
           await loadAll()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
@@ -11956,7 +12542,7 @@ function GalleryTab2({ onScopeChanged }) {
         try {
           await api('/rounds/purge', { rounds: [round] })
           say('卡片已从回收站彻底移出（底层数据仍然保留）')
-          setDelArm(''); await loadAll()
+          setDelArm(''); void loadDisk(true); await loadAll()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const purgeAllDeleted = async () => {
@@ -11964,7 +12550,7 @@ function GalleryTab2({ onScopeChanged }) {
         try {
           const r = await api('/rounds/purge', { all: true })
           say(`已清空 ${r?.purged || 0} 张已删除卡片`)
-          setDelArm(''); await loadAll()
+          setDelArm(''); void loadDisk(true); await loadAll()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
       const loadRecent = React.useCallback(async (rg) => {
@@ -11976,9 +12562,9 @@ function GalleryTab2({ onScopeChanged }) {
         catch { /* ignore */ }
       }, [])
       /* 磁盘占用由服务端扫盘算（60 秒缓存），前端只在进界面时取一次 */
-      const loadDisk = React.useCallback(async () => {
+      const loadDisk = React.useCallback(async (fresh) => {
         try {
-          const r = await api('/disk')
+          const r = await api('/disk' + (fresh ? '?fresh=1' : ''))
           const b = Number(r?.bytes)
           if (alive.current && Number.isFinite(b)) setDiskGB(b / 1e9)
           const tb = Number(r?.todayBytes)
@@ -12499,6 +13085,7 @@ function GalleryTab2({ onScopeChanged }) {
             h('i', { 'data-pg-swi-track': '' }, h('b', { 'data-pg-swi-knob': '' })),
             h('span', { 'data-pg-swi-r': '' }, '只刷已关注')),
           h('button', { 'data-pg-btn': '', 'data-hue': 'green', 'data-pg-lookupbtn': '', onClick: () => setLookupOpen(true) }, '🌿 画廊检索'),
+          h('button', { 'data-pg-btn': '', 'data-hue': 'red', 'data-pg-feedbackbtn': '', title: '群号、B 站介绍、提 issue 都在这里', onClick: () => setFbOpen(true) }, '🥵 给作者提意见'),
           h('button', { 'data-pg-btn': '', 'data-hue': 'amber', onClick: () => setSettings(true) }, '设置'),
           h('button', { 'data-pg-btn': '', 'data-hue': 'blue', onClick: () => { loadAll(); say('已刷新', 'good') } }, '刷新'))),
         runProg ? h('div', { 'data-pg-runbar': '', 'data-phase': runProg.phase, 'data-engine': runProg.engine || '', 'data-stage': runProg.stage || '' },
@@ -13170,7 +13757,10 @@ function GalleryTab2({ onScopeChanged }) {
           onRestart: () => { setUpdSheet(null); void pgRestartDsh() },
         }) : null,
         lookupOpen ? h(LookupSheet, { onClose: () => setLookupOpen(false), say, theme: uiTheme }) : null,
+        fbOpen ? h(FeedbackSheet, { onClose: () => setFbOpen(false), say, theme: uiTheme }) : null,
+        profileNudge ? h(ProfileNudge, { theme: uiTheme, onLater: () => answerNudge('later'), onRun: () => answerNudge('run') }) : null,
         settings ? h(Settings2, {
+          autoReadPrefs: nudgeRun,
           onClose: () => { setSettings(false); setUpdIntent(null); setPanelIntent('') },
           onSaved: () => { onScopeChanged?.(); loadAll() },
           say,
@@ -13292,8 +13882,6 @@ function GalleryTab2({ onScopeChanged }) {
 [data-pg-theme="light"] [data-pg-depstate="missing"],
 [data-pg-theme="light"] [data-pg-avg="yellow"],
 [data-pg-theme="light"] [data-pg-num="yellow"],
-[data-pg-theme="light"] [data-pg-score="7"],
-[data-pg-theme="light"] [data-pg-score="10"],
 [data-pg-theme="light"] [data-pg-achtip]{color:#92400e;}
 /* 淡蓝/青 → 深蓝 */
 [data-pg-theme="light"] [data-pg-runstage][data-state="run"],
@@ -13411,6 +13999,8 @@ function GalleryTab2({ onScopeChanged }) {
 [data-pg-theme="light"] [data-pg-score="6"]{color:#4b5563;}
 [data-pg-theme="light"] [data-pg-score="8"]{color:#c2410c;}
 [data-pg-theme="light"] [data-pg-score="9"]{color:#be123c;}
+[data-pg-theme="light"] [data-pg-score="7"]{color:#8a5f00 !important;border-color:rgba(138,95,0,.55) !important;background:rgba(138,95,0,.07) !important;text-shadow:none !important;}
+[data-pg-theme="light"] [data-pg-score="10"]{color:#4a2f00 !important;border-color:#d99b00 !important;background:linear-gradient(180deg,#ffe98a 0%,#ffd23f 55%,#f5b400 100%) !important;box-shadow:0 1px 6px rgba(230,160,0,.38) !important;text-shadow:0 1px 0 rgba(255,255,255,.55) !important;font-weight:900 !important;}
 /* 多图平铺下载 spread / savedlg：按钮白半透 + 深字 */
 [data-pg-theme="light"] [data-pg-spread] [data-pg-btn],
 [data-pg-theme="light"] [data-pg-spread] [data-pg-select],
@@ -13788,6 +14378,8 @@ function GalleryTab2({ onScopeChanged }) {
 [data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="green"]:hover{background:rgba(16,185,129,.18);border-color:rgba(5,150,105,.6);color:#04543d;}
 [data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="amber"]{background:rgba(245,158,11,.12);border-color:rgba(180,83,9,.38);color:#92400e;}
 [data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="amber"]:hover{background:rgba(245,158,11,.2);border-color:rgba(180,83,9,.6);color:#78350f;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="red"]{background:rgba(239,68,68,.12);border-color:rgba(185,28,28,.38);color:#b91c1c;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="red"]:hover{background:rgba(239,68,68,.2);border-color:rgba(185,28,28,.6);color:#7f1d1d;}
 [data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="blue"]{background:rgba(56,189,248,.12);border-color:rgba(2,132,199,.38);color:#075985;}
 [data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="blue"]:hover{background:rgba(56,189,248,.2);border-color:rgba(2,132,199,.6);color:#0c4a6e;}
 [data-pg-theme="light"] [data-pg-head] [data-pg-tabs]{background:rgba(0,0,0,.05);}
