@@ -31,10 +31,13 @@ import {
   backfillTrash,
   listRounds, loadRound, loadState, normScore, pickDefaultHeader, recentAverages, removeRoundItems, restrictOf, renameTagFolder,
   renameVirtualTag, renameWork, renameWorkFile, roundDetail, roundStats, roundScore, saveState, scanWorkDir,
-  setWorkCustomTags, setWorkTags, summary, syncFollowedTags, syncRatedLibrary, trashList, workNamesForList, workScore,
+  setWorkCustomTags, setWorkTags, summary, syncFollowedTags, syncRatedLibrary, trashList, workNamesForList, workScore, galleryDiskUsage,
+  trashUsage,
+  restoreTrashToCard, pruneRestoreCard,
   /** 采集限流 */ COLLECT_RULE_DEFAULTS, collectRules, dropRoundCollect, libraryIdSet, planCollectDrops, recordCollected,
   /** 全局已收集 */ collectedIdSet, seedCollectedIds, markCollected,
   /** AI 标记 */ AI_COLLECTION, isAiTags,
+  /** 收藏夹置顶 */ collectionPin, collectionPinOrder, collectionSwap, collectionOrder,
 } from './lib/gallery.mjs'
 import { depsSnapshot, chromeExe, pixivScrollDir, playwrightCoreDir } from './lib/deps.mjs'
 
@@ -165,7 +168,7 @@ import { downloadWork, guessRoot, mapPool } from './lib/downloader.mjs'
 import { buildTaste } from './lib/taste.mjs'
 import { analyzeStyleProfile, sanitizeTasteStyle } from './lib/vision.mjs'
 import { allPresets, activePreset, savePreset, deletePreset, presetToScrollPatch, normalizePreset } from './lib/presets.mjs'
-import { pageImage, pageImageFull, workMeta, authorLatest, prunePageCache, setCredentialSource, ensureUgoiraFrames, isUgoira, ugoiraFrame, setZipTool, thumbImage, pixivHeaders } from './lib/pixivpages.mjs'
+import { pageImage, pageImageFull, workMeta, authorLatest, prunePageCache, setCredentialSource, ensureUgoiraFrames, ensureUgoiraAnim, localUgoiraFrames, isUgoira, ugoiraFrame, setZipTool, thumbImage, pixivHeaders } from './lib/pixivpages.mjs'
 import { proxiedRequest, proxiedGet, proxiedJson, netStats, detectProxy, currentRoute, routeReport } from './lib/net.mjs'
 import { ensureThumb } from './lib/thumbs.mjs'
 import {
@@ -184,7 +187,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.3.5'
+const GALLERY_VERSION = '1.5.0'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 
 function bad(status, error, extra = {}) {
@@ -292,6 +295,49 @@ function makeApi(deps) {
   const roundDirOf = (round) => {
     const s = safeName(round, 90)
     return { s, dir: join(picksRootOf(pixiv), s), page: join(picksRootOf(pixiv), `${s}.html`) }
+  }
+
+  /* 已下载原图的作品不再需要 thumbs 缓存：删掉那一张，省磁盘。
+     /thumb 的第 4 级兜底会读 item.dir 里的本地原图，所以封面照常显示。 */
+  const pruneDownloadedThumbs = () => {
+    let removed = 0
+    let bytes = 0
+    try {
+      const st = load()
+      /* 以「作品库里 downloaded=true 且目录真的还在」为准：
+         已下原图的作品由 /thumb 第 4 级兜底读本地原图，封面不依赖 thumbs。 */
+      const lib = listLibraryCached(pixiv, st, { extraRoot: join(home, 'Download') })
+      const trashed = new Set(Object.values(st?.trash || {}).flatMap((b) => Object.keys(b || {})))
+      const ids = new Set()
+      for (const w of (lib?.works || [])) {
+        if (!w || !w.downloaded) continue
+        if (trashed.has(String(w.id || ''))) continue /* 回收站作品的封面照回收站规则留着 */
+        const id = String(w.id || '')
+        const d = String(w.savedDir || w.dir || '')
+        if (id && d && existsSync(d)) ids.add(id)
+      }
+      if (!ids.size) return { ok: true, removed, bytes }
+      const rounds = Array.isArray(st?.roundOrder) && st.roundOrder.length ? st.roundOrder : Object.keys(st?.rounds || {})
+      for (const round of rounds) {
+        const tdir = join(roundDirOf(round).dir, 'thumbs')
+        if (!existsSync(tdir)) continue
+        for (const id of ids) {
+          for (const ext of ['.jpg', '.jpeg', '.png', '.webp']) {
+            const f = join(tdir, id + ext)
+            if (!existsSync(f)) continue
+            try {
+              bytes += Number(statSync(f).size) || 0
+              rmSync(f, { force: true })
+              removed += 1
+            } catch { /* 单张失败不影响整轮 */ }
+          }
+        }
+      }
+      if (removed) log(`封面缓存清理：已下载的作品删掉 ${removed} 张 thumbs（省 ${(bytes / 1048576).toFixed(1)} MB）`)
+    } catch (e) {
+      log(`封面缓存清理跳过：${e?.message ?? e}`)
+    }
+    return { ok: true, removed, bytes }
   }
 
   // 2026-11-06：改成稳定 URL。原来拼 ?v=<mtime>，每次文件改动都生成一个全新的模块 URL，
@@ -903,7 +949,59 @@ const probeNetwork = async () => {
    * 走 lib/net.mjs 的代理探测：环境变量 / Windows 系统代理 / 刷Pixiv 配置 —— 任一条通就行，
    * 不再自己拼 curl，否则「配置里没写 proxyUrl 就直接连不上」。
    */
-  const fetchPixivAjax = async (path) => {
+  
+/* ─────────── 画廊检索：pid / 网址 → 作品元数据 ─────────── */
+const lookIdOf = (raw) => {
+  const s = String(raw || '').trim()
+  if (!s) return ''
+  if (/^\d{3,12}$/.test(s)) return s
+  const pats = [/artworks\/(\d{3,12})/i, /illust_id=(\d{3,12})/i, /illust\/(\d{3,12})/i, /ixid=(\d{3,12})/i]
+  for (const re of pats) { const m = re.exec(s); if (m) return m[1] }
+  return ''
+}
+
+const illustMetaOf = async (id) => {
+  const j = await proxiedJson('https://www.pixiv.net/ajax/illust/' + encodeURIComponent(id) + '?lang=zh', {
+    headers: pixivHeaders('https://www.pixiv.net/artworks/' + id), timeout: 20000,
+  })
+  if (j && j.error) throw new Error(String(j.message || 'pixiv 说取不到这件作品'))
+  const b = (j && j.body) || {}
+  const tags = (Array.isArray(b.tags && b.tags.tags) ? b.tags.tags : [])
+    .map((t) => (t && t.tag ? String(t.tag) : '')).filter(Boolean)
+  const xr = Number(b.xRestrict) || 0
+  const pid = String(b.illustId || id)
+  return {
+    id: pid,
+    title: String(b.illustTitle || b.title || ('作品 ' + pid)),
+    artist: String(b.userName || ''),
+    artistId: String(b.userId || ''),
+    tags,
+    xRestrict: xr,
+    rating: xr >= 2 ? 'r18g' : xr >= 1 ? 'r18' : 'all',
+    pages: Math.max(1, Number(b.pageCount) || 1),
+    createDate: String(b.createDate || ''),
+    bookmarks: Number(b.bookmarkCount) || 0,
+    views: Number(b.viewCount) || 0,
+    url: 'https://www.pixiv.net/artworks/' + pid,
+    cover: String((b.urls && (b.urls.small || b.urls.thumb || b.urls.regular)) || ''),
+  }
+}
+
+/** 作品库里的 id → { name, dir }；用于「已经下过就别再下」 */
+const libraryById = (state) => {
+  const m = new Map()
+  try {
+    const lib = listLibraryCached(pixiv, state, { extraRoot: join(home, 'Download') })
+    for (const w of lib.works || []) {
+      const id = String(w.id || '').trim()
+      if (!id || m.has(id)) continue
+      m.set(id, { name: String(w.name || ''), dir: String(w.dir || '') })
+    }
+  } catch { /* 空库 */ }
+  return m
+}
+
+const fetchPixivAjax = async (path) => {
     const cred = readJson(join(pixiv, 'credential.json'), {})
     const cookie = Object.entries(cred.webCookie || {}).map(([k, v]) => `${k}=${v}`).join('; ')
     if (!cookie) throw new Error('没有 Pixiv 登录 cookie（去刷Pixiv 扫码登录一次）')
@@ -2318,6 +2416,57 @@ function buildXpTitle(taste, favoriteTags) {
   return title || '偏好不明'
 }
 
+/** 一键打包本页：压缩包是临时的，密码固定，一小时后自删。 */
+const PACK_PASSWORD = '春'
+const PACK_TTL_MS = 3600 * 1000
+
+  /* ── 动图整段落盘：把 <home>/ugoira/<id>/anim.webp 复制进作品目录（命名沿用下载时的 <base>_anim.webp） ── */
+  function animTargetOf(dir) {
+    try {
+      const names = readdirSync(dir)
+      const frame = names.find((n) => /_p\d+\.[a-z0-9]+$/i.test(n))
+      const base = frame ? frame.replace(/_p\d+\.[a-z0-9]+$/i, '') : ''
+      return base ? join(dir, base + '_anim.webp') : ''
+    } catch { return '' }
+  }
+
+  async function saveAnimIntoWork(pixivHome, id) {
+    const lib = markUgoira(listLibraryCached(pixivHome, load(), { extraRoot: join(home, 'Download') }))
+    const w = (lib.works || []).find((x) => String(x.id) === String(id) && x.ugoira && x.dir)
+    if (!w) return { ok: false, reason: '作品库里没有这件动图' }
+    const target = animTargetOf(w.dir)
+    if (!target) return { ok: false, reason: '找不到帧文件，无法确定命名' }
+    if (existsSync(target)) return { ok: true, skipped: true, file: target }
+    const anim = await ensureUgoiraAnim(home, String(id))
+    if (!anim?.file || !existsSync(anim.file)) return { ok: false, reason: '合成失败' }
+    copyFileSync(anim.file, target)
+    try { resetLibraryCache() } catch { /* ignore */ }
+    return { ok: true, file: target, bytes: statSync(target).size }
+  }
+
+  let animBackfillBusy = false
+  async function backfillAnims(pixivHome, limit = 3) {
+    if (animBackfillBusy) return { ok: true, busy: true, done: 0, remaining: -1 }
+    animBackfillBusy = true
+    const res = { ok: true, done: 0, failed: 0, remaining: 0 }
+    try {
+      const lib = markUgoira(listLibraryCached(pixivHome, load(), { extraRoot: join(home, 'Download') }))
+      const todo = (lib.works || []).filter((w) => w.ugoira && w.id && w.dir &&
+        !(w.files || []).some((n) => /_anim\.webp$/i.test(typeof n === 'string' ? n : (n?.name || ''))))
+      res.remaining = todo.length
+      for (const w of todo.slice(0, Math.max(1, limit))) {
+        try {
+          const r = await saveAnimIntoWork(pixivHome, String(w.id))
+          if (r.ok) res.done += 1
+          else res.failed += 1
+        } catch { res.failed += 1 }
+      }
+      res.remaining = Math.max(0, res.remaining - res.done)
+    } finally { animBackfillBusy = false }
+    if (res.done) { try { resetLibraryCache() } catch { /* ignore */ }; log('动图整段落盘 ' + res.done + ' 件（待补 ' + res.remaining + '）') }
+    return res
+  }
+
 const routes = {
     '/follow': {
       methods: ['POST'],
@@ -3114,6 +3263,7 @@ const routes = {
         }
         if (typeof body.autoFollowedTags === 'boolean') state.config.autoFollowedTags = body.autoFollowedTags
         if (body.trashDays !== undefined) state.config.trashDays = Math.max(1, Math.min(3650, bodyInt(body.trashDays, 2) || 2))
+        if (body.trashKeep !== undefined) state.config.trashKeep = Math.max(1, Math.min(500, bodyInt(body.trashKeep, 50) || 50))
         if (body.downloadRoot !== undefined) {
           const v = String(body.downloadRoot || '').trim()
           state.config.downloadRoot = v ? resolve(v) : ''
@@ -3350,7 +3500,7 @@ const routes = {
           ...t,
           cover: coverById.get(String(t.id)) ? `/lib-cover?name=${encodeURIComponent(coverById.get(String(t.id)))}` : '',
         }))
-        return ok({ items, days: state.config.trashDays || 2, purged: cleanup.purged })
+        return ok({ items, days: state.config.trashDays || 2, keep: cleanup.keep || 50, purged: cleanup.purged, trimmed: cleanup.trimmed || 0 })
       },
     },
 
@@ -3383,6 +3533,21 @@ const routes = {
       },
     },
 
+    // 回收站单件/批量恢复：统一进「恢复的作品」这张常驻卡片，可以单独重新评分
+    '/trash/restore': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const state = load()
+        const items = Array.isArray(body?.items) ? body.items : []
+        if (!items.length && body?.round && body?.id) items.push({ round: body.round, id: body.id })
+        if (!items.length) return bad(400, '缺少 items')
+        const r = restoreTrashToCard(pixiv, state, items)
+        if (r.restored) save()
+        log('回收站恢复 ' + r.restored + ' 件到「恢复的作品」')
+        return ok(r)
+      },
+    },
+
     '/trash/cleanup': {
       methods: ['POST'],
       handler: (q, body) => {
@@ -3398,6 +3563,8 @@ const routes = {
       methods: ['GET'],
       handler: () => {
         const state = load()
+        // 「恢复的作品」里已经进库的作品自动离开这张卡片
+        try { if (pruneRestoreCard(pixiv, state).removed) save() } catch { /* ignore */ }
         // 预设徽章/模式色从本次升级开始生效：之前生成的老轮次保持原样
         if (!state.config.modeSince) {
           state.config.modeSince = new Date().toISOString()
@@ -4565,6 +4732,12 @@ const routes = {
       },
     },
 
+    /** 清理已下载作品的封面缓存（thumbs）；不改任何作品文件 */
+    '/thumb/prune': {
+      methods: ['GET', 'POST'],
+      handler: async () => ok(pruneDownloadedThumbs()),
+    },
+
     /** 作者头像：先读本地缓存，没有就现取一张存盘 */
     '/author-avatar': {
       methods: ['GET'],
@@ -4828,6 +5001,242 @@ const routes = {
      * 动图（ugoira）预览：返回帧列表 + 尺寸。
      * 第一次会下压缩包并解到 <home>/ugoira/<id>/frames，之后直接读磁盘。
      */
+
+    /* 「画廊检索」的对话：走视觉通路，默认落到用户当前在用的宿主模型 */
+    '/gallery/ask': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const question = String(body?.question || '').trim().slice(0, 2000)
+        const images = Array.isArray(body?.images) ? body.images.slice(0, 8) : []
+        const history = Array.isArray(body?.history) ? body.history.slice(-8) : []
+        try {
+          const r = await (await loadVision()).askGallery(ctx, { config: load().config || {}, question, images, history })
+          return r.ok ? ok(r) : bad(502, r.error || '模型没回答')
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 240))
+        }
+      },
+    },
+
+    /* 任意 pid 的图（「画廊检索」预览用）：本地有就发本地文件，没有按页去 pixiv 取 */
+    '/work/img': {
+      methods: ['GET'],
+      handler: async (q) => {
+        const id = String(q.get('id') || '').trim()
+        const page = Math.max(0, bodyInt(q.get('page'), 0))
+        const full = String(q.get('full') || '') === '1'
+        if (!/^\d{3,12}$/.test(id)) return bad(400, '作品 id 不合法')
+        const hit = libraryById(load()).get(id)
+        if (hit && hit.dir && existsSync(hit.dir)) {
+          const files = imageFilesOfWork(hit.dir)
+          if (files.length && page < files.length) {
+            const f = join(hit.dir, files[page])
+            if (existsSync(f)) return sendFile(f)
+          }
+        }
+        try {
+          let got = null
+          if (full) { try { got = await pageImageFull(home, id, page) } catch { /* 退普通图 */ } }
+          if (!got) got = await pageImage(home, id, page)
+          return { status: 200, body: got.buffer, type: 'image/jpeg', cache: 'no-cache', headers: { 'x-page': String(page) } }
+        } catch (e) {
+          const msg = String(e?.message ?? e)
+          if (/HTTP 429|Just a moment|rate limit/i.test(msg)) {
+            return { status: 503, body: Buffer.from('pixiv 正在限流（429），等一会儿再试。', 'utf8'), type: 'text/plain; charset=utf-8', headers: { 'x-busy': '1' } }
+          }
+          return { status: 404, body: Buffer.from('取不到这一页：' + msg.slice(0, 120), 'utf8'), type: 'text/plain; charset=utf-8', headers: { 'x-error': hdrSafe(msg) } }
+        }
+      },
+    },
+
+    /** 检索：pid / 作品网址 / 收藏集网址 / 关键词，都从这一个口进 */
+    '/work/lookup': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const raw = String(body?.input || '').trim()
+        if (!raw) return bad(400, '请输入 pid 或 pixiv 网址')
+        const colM = /collections\/(\d{3,12})/i.exec(raw)
+        if (colM) {
+          const cid = colM[1]
+          let j = null
+          for (const u of [
+            'https://www.pixiv.net/ajax/illust/collection/' + cid + '?lang=zh',
+            'https://www.pixiv.net/ajax/collection/' + cid + '?lang=zh',
+          ]) {
+            try {
+              const r = await proxiedJson(u, { headers: pixivHeaders('https://www.pixiv.net/'), timeout: 20000 })
+              if (r && !r.error) { j = r; break }
+            } catch { /* 换下一个 */ }
+          }
+          if (!j) return bad(404, '这个收藏集取不到（要公开收藏集）')
+          const b = j.body || {}
+          const ids = new Set()
+          for (const x of (b.illusts || b.works || [])) {
+            const v = String((x && (x.illustId || x.id || x)) || '').trim()
+            if (/^\d{3,12}$/.test(v)) ids.add(v)
+          }
+          for (const w of (b.worksDetails || [])) {
+            const v = String((w && (w.illustId || w.id)) || '').trim()
+            if (/^\d{3,12}$/.test(v)) ids.add(v)
+          }
+          if (!ids.size) return bad(404, '收藏集里没有作品（要公开收藏集）')
+          const list = [...ids].slice(0, 60)
+          const items = []
+          for (const id of list) { try { items.push(await illustMetaOf(id)) } catch { /* 跳过 */ } }
+          return ok({ kind: 'collection', id: cid, total: list.length, items })
+        }
+        const id = lookIdOf(raw)
+        if (id) {
+          try { return ok({ kind: 'illust', items: [await illustMetaOf(id)] }) }
+          catch (e) { return bad(404, String(e?.message ?? e).slice(0, 160)) }
+        }
+        try {
+          const w = encodeURIComponent(raw)
+          const j = await proxiedJson('https://www.pixiv.net/ajax/search/artworks/' + w + '?word=' + w + '&order=date_d&mode=all&p=1&s_mode=s_tag&type=all&lang=zh', {
+            headers: pixivHeaders('https://www.pixiv.net/'), timeout: 20000,
+          })
+          const data = (j && j.body && j.body.illustManga && j.body.illustManga.data) || []
+          const items = data.slice(0, 24).map((x) => {
+            const xr = Number(x.xRestrict) || 0
+            const pid = String(x.id || '')
+            return {
+              id: pid, title: String(x.title || ''), artist: String(x.userName || ''), artistId: String(x.userId || ''),
+              tags: (x.tags || []).map(String).slice(0, 20), xRestrict: xr,
+              rating: xr >= 2 ? 'r18g' : xr >= 1 ? 'r18' : 'all',
+              pages: Math.max(1, Number(x.pageCount) || 1), createDate: String(x.createDate || ''),
+              url: 'https://www.pixiv.net/artworks/' + pid, cover: String(x.url || ''),
+            }
+          }).filter((x) => x.id)
+          if (!items.length) return bad(404, '没搜到，也没识别出 pid')
+          return ok({ kind: 'search', keyword: raw, items })
+        } catch (e) {
+          return bad(502, '检索失败：' + String(e?.message ?? e).slice(0, 140))
+        }
+      },
+    },
+
+    /** 一键收：下载 → 作品库 → 收藏夹 →（可选）新建一张自定义卡片 */
+    '/work/quick-collect': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const ids = (Array.isArray(body?.ids) ? body.ids : []).map(String).filter((x) => /^\d{3,12}$/.test(x)).slice(0, 40)
+        if (!ids.length) return bad(400, '没有合法的作品 id')
+        const wantCol = String(body?.collection || '').trim()
+        const wantKey = String(body?.key || '').trim().toUpperCase().slice(0, 2)
+        const cardName = String(body?.cardName || '').trim().slice(0, 60)
+        const st0 = load()
+        let target = wantCol
+        if (!target && wantKey) {
+          for (const [name, c] of Object.entries(st0.collections || {})) {
+            if (String((c && c.key) || '').toUpperCase() === wantKey) { target = name; break }
+          }
+        }
+        if (target && !(st0.collections || {})[target]) { collectionCreate(st0, target); save() }
+        const root = guessRoot(home, st0.config.downloadRoot)
+        const dirTmpl = String(st0.config.dirTemplate)
+        const fileTmpl = String(st0.config.fileNameTemplate)
+        const known = libraryById(st0)
+
+        const metas = []
+        const failed = []
+        for (const id of ids) {
+          try { metas.push(await illustMetaOf(id)) } catch (e) { failed.push({ id, error: String(e?.message ?? e).slice(0, 140) }) }
+        }
+        if (!metas.length) return bad(502, failed[0] ? failed[0].error : '一件都没取到')
+
+        // 自定义卡片：先建目录，后面把收进来的作品挂上去
+        const wantCard = Boolean(body?.newCard)
+        let round = ''
+        let roundDir = ''
+        if (wantCard) {
+          const now = new Date()
+          const pad = (n) => String(n).padStart(2, '0')
+          round = 'custom-' + now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes()) + '-' + Math.random().toString(36).slice(2, 7)
+          roundDir = join(picksRootOf(pixiv), round)
+          mkdirSync(join(roundDir, 'thumbs'), { recursive: true })
+        }
+
+        const names = []
+        const cardItems = []
+        const results = await mapPool(metas, WORK_CONCURRENCY, async (m) => {
+          try {
+            let name = ''
+            let dir = ''
+            const hit = known.get(m.id)
+            if (hit && hit.dir && existsSync(hit.dir)) { name = hit.name; dir = hit.dir }
+            else {
+              const out = await downloadWork(home, m, { root, dirTemplate: dirTmpl, fileTemplate: fileTmpl, maxPages: st0.config.maxPages })
+              dir = out.dir
+              name = dir.split(/[\\/]/).pop()
+            }
+            if (round) {
+              try {
+                const got = await thumbImage(home, m.id)
+                if (got && got.buffer) writeFileSync(join(roundDir, 'thumbs', m.id + '.jpg'), got.buffer)
+              } catch { /* 缩略图失败不影响收录 */ }
+            }
+            const st = load()
+            st.libraryAdded = st.libraryAdded || {}
+            st.libraryAdded[name] = { at: new Date().toISOString(), round: round || 'quick', id: m.id }
+            markCollected(st, [m.id], { round: round || 'quick' })
+            if (target) collectionAdd(st, target, [name])
+            save()
+            names.push(name)
+            if (round) {
+              cardItems.push({
+                id: m.id, title: m.title, artist: m.artist, artistId: m.artistId, tags: m.tags,
+                xRestrict: m.xRestrict, rating: m.rating, pages: m.pages,
+                cover: 'thumbs/' + m.id + '.jpg', dir, status: 'saved', round, createDate: m.createDate,
+              })
+            }
+            return { id: m.id, ok: true, name }
+          } catch (e) {
+            return { id: m.id, ok: false, error: netHint(e).slice(0, 160) }
+          }
+        })
+        for (const r of results) if (!r.ok) failed.push({ id: r.id, error: r.error })
+
+        if (round && cardItems.length) {
+          writeJson(join(roundDir, 'candidates.json'), {
+            createdAt: new Date().toISOString(),
+            preset: cardName || '自己挑的',
+            note: '从「画廊检索」手动收进来的',
+            items: cardItems,
+            pushMode: false,
+          })
+        }
+        resetLibraryCache()
+        feedback()
+        return ok({ round, cardName: cardName || '', collection: target || '', saved: names.length, names, results, failed })
+      },
+    },
+
+    /** 收藏夹的快捷键（F1–F9）：一个键只对应一个收藏夹 */
+    '/collections/keys': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const st = load()
+        const name = String(body?.name || '').trim()
+        const key = String(body?.key || '').trim().toUpperCase()
+        if (!name) return bad(400, '缺少收藏夹名')
+        if (key && !/^F[1-9]$/.test(key)) return bad(400, '快捷键只能是 F1–F9')
+        st.collections = st.collections || {}
+        const c = st.collections[name]
+        if (!c) return bad(404, '这个收藏夹不存在')
+        if (key) {
+          for (const [n, o] of Object.entries(st.collections)) {
+            if (n !== name && String((o && o.key) || '').toUpperCase() === key) o.key = ''
+          }
+        }
+        c.key = key
+        c.updatedAt = new Date().toISOString()
+        save()
+        const map = {}
+        for (const [n, o] of Object.entries(st.collections)) if (o && o.key) map[String(o.key).toUpperCase()] = n
+        return ok({ name, key, map })
+      },
+    },
+
     '/ugoira': {
       methods: ['GET'],
       handler: async (q) => {
@@ -4836,7 +5245,9 @@ const routes = {
         try {
           const m = await ensureUgoiraFrames(home, id)
           const frames = m.frames.map((f, i) => ({ u: `/ugoira-frame?id=${id}&i=${i}`, delay: f.delay }))
-          return { status: 200, body: { ok: true, id, w: m.w, h: m.h, count: frames.length, frames, cached: Boolean(m.cached) }, type: 'application/json; charset=utf-8', cache: 'no-cache' }
+          const animFile = join(home, 'ugoira', id, 'anim.webp')
+          const anim = existsSync(animFile) ? `/ugoira-anim?id=${id}` : ''
+          return { status: 200, body: { ok: true, id, w: m.w, h: m.h, count: frames.length, frames, anim, cached: Boolean(m.cached) }, type: 'application/json; charset=utf-8', cache: 'no-cache' }
         } catch (e) {
           return { status: 404, body: { ok: false, error: String(e?.message ?? e) }, type: 'application/json; charset=utf-8', cache: 'no-cache' }
         }
@@ -4856,6 +5267,39 @@ const routes = {
         }
       },
     },
+
+    /**
+     * 动图整段播放文件（循环 webp）：一次请求播完整段，替代逐帧拉取。
+     * 本地已有 <home>/ugoira/<id>/anim.webp 就直接给；build=1 时现场合成（默认 800px / q62）。
+     */
+    '/ugoira-anim': {
+      methods: ['GET'],
+      handler: async (q) => {
+        const id = String(q.get('id') || '').trim()
+        if (!/^\d{1,12}$/.test(id)) return bad(400, '作品 id 不合法')
+        const build = String(q.get('build') || '') === '1'
+        const file = join(home, 'ugoira', id, 'anim.webp')
+        if (!existsSync(file)) {
+          if (!build) return bad(404, '动图还没合成')
+          try {
+            const t0 = Date.now()
+            const r = await ensureUgoiraAnim(home, id)
+            try { await saveAnimIntoWork(pixiv, id) } catch { /* 作品库里没有就只留缓存 */ }
+            return ok({ id, bytes: r.bytes, frames: r.frames, width: r.width, quality: r.quality, ms: Date.now() - t0 })
+          } catch (e) {
+            return bad(502, String(e?.message ?? e).slice(0, 200))
+          }
+        }
+        const res = sendFile(file)
+        return { ...res, type: 'image/webp', cache: 'public, max-age=31536000, immutable' }
+      },
+    },
+    /** 把作品库里所有已收集动图的整段 webp 补进作品目录（前端进作品库时静默调用） */
+    '/ugoira/backfill': {
+      methods: ['POST'],
+      handler: async (q, body) => ok(await backfillAnims(pixiv, Math.min(8, Math.max(1, bodyInt(body?.limit, 3))))),
+    },
+
 
     /** 这件作品是不是动图（前端点开单张时用一次，带缓存） */
     '/is-ugoira': {
@@ -4899,6 +5343,146 @@ const routes = {
           return bad(500, '设置剪贴板失败：' + why)
         }
         return ok({ id, name, path: file, size })
+      },
+    },
+
+    /** 主界面标题下「已用磁盘」：作品库原图 + 轮次缩略图（60 秒缓存） */
+    '/disk': {
+      methods: ['GET'],
+      handler: () => {
+        let t = { trashBytes: 0, trashCount: 0, trashItems: [] }
+        try { t = trashUsage(pixiv, load()) } catch { /* 回收站读不出来就先只给磁盘数 */ }
+        return ok({ ...galleryDiskUsage(pixiv), ...t })
+      },
+    },
+
+    /** 一键打包本页：把当页作品的文件压成一个 .7z（用插件自带的 tools/7zr.exe），
+        压完顺手挂进系统剪贴板，粘到 QQ 里就能直接发。文件名＝页码_第一件作品标题。 */
+    '/pack/page': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const items = (Array.isArray(body?.items) ? body.items : []).slice(0, 60)
+        if (!items.length) return bad(400, '没有要打包的作品')
+        const page = Math.max(1, Math.floor(Number(body?.page) || 1))
+        const firstTitle = String(body?.title || '').trim() || '本页作品'
+        const all = allworkOf(pixiv)
+        const dirs = new Map()
+        try { for (const d of collectWorkDirs(all)) dirs.set(basename(d), d) } catch { /* 作品根不存在 */ }
+        const stage = join(home, 'packs', '.stage-' + Date.now())
+        mkdirSync(stage, { recursive: true })
+        const picked = []
+        const missing = []
+        items.forEach((it, idx) => {
+          const nm = safeName(String(it?.name || ''), 110)
+          if (!nm) return
+          let src = ''
+          const dir = dirs.get(nm) || join(all, nm)
+          try {
+            if (existsSync(dir)) {
+              const list = imageFilesOfWork(dir)
+              if (list.length) src = join(dir, list[0])
+            }
+          } catch { src = '' }
+          if (!src && it?.round && it?.id) {
+            const th = join(picksRootOf(pixiv), String(it.round), 'thumbs', String(it.id) + '.jpg')
+            if (existsSync(th)) src = th
+          }
+          if (!src) { missing.push(nm); return }
+          const ext = extname(src) || '.jpg'
+          const stem = basename(src, ext).slice(0, 60) || 'work'
+          const to = join(stage, String(idx + 1).padStart(2, '0') + '_' + stem + ext)
+          try { copyFileSync(src, to); picked.push(basename(to)) } catch { missing.push(nm) }
+        })
+        if (!picked.length) {
+          try { rmSync(stage, { recursive: true, force: true }) } catch { /* ignore */ }
+          return bad(400, '这些作品在本机都没有文件（既没下载，也没有缩略图）')
+        }
+        const exe = sevenZip()
+        if (!exe) {
+          try { rmSync(stage, { recursive: true, force: true }) } catch { /* ignore */ }
+          return bad(400, '没找到 7-Zip 命令行（tools/7zr.exe 或系统里的 7z.exe）')
+        }
+        const outDir = join(home, 'packs')
+        mkdirSync(outDir, { recursive: true })
+        const base = safeName('[画廊]' + String(page) + '_' + firstTitle + '『春』', 70) || ('第' + page + '页')
+        const archive = join(outDir, base + '.7z')
+        const r = await runCmd(exe, ['a', '-t7z', '-mx=5', '-y', '-p' + PACK_PASSWORD, archive, ...picked], { cwd: stage })
+        // 临时包：一小时后自删；顺手把同目录里过期的旧包也清掉
+        try {
+          setTimeout(() => { try { rmSync(archive, { force: true }) } catch { /* ignore */ } }, PACK_TTL_MS)
+        } catch { /* ignore */ }
+        try {
+          for (const f of readdirSync(outDir)) {
+            if (!f.toLowerCase().endsWith('.7z')) continue
+            const p = join(outDir, f)
+            try { if (Date.now() - statSync(p).mtimeMs > PACK_TTL_MS) rmSync(p, { force: true }) } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+        try { rmSync(stage, { recursive: true, force: true }) } catch { /* ignore */ }
+        if (!r.ok) return bad(500, '打包失败：' + String(r.err || r.out || ('退出码 ' + r.code)).slice(0, 300))
+        let bytes = 0
+        try { bytes = statSync(archive).size } catch { /* ignore */ }
+        try {
+          const ps = "Add-Type -AssemblyName System.Windows.Forms; $c = New-Object System.Collections.Specialized.StringCollection; [void]$c.Add('"
+            + archive.replace(/'/g, "''") + "'); [System.Windows.Forms.Clipboard]::SetFileDropList($c)"
+          spawnSync('powershell.exe', ['-NoProfile', '-STA', '-Command', ps], { timeout: 30000, windowsHide: true })
+        } catch { /* 剪贴板失败不影响打包结果 */ }
+        log('打包本页 ' + picked.length + ' 件 → ' + archive)
+        return ok({ file: archive, dir: outDir, name: base + '.7z', count: picked.length, missing, bytes })
+      },
+    },
+
+    /** 一键复制本页：把当页作品的文件挂成剪贴板「文件列表」，QQ 聊天框一次粘贴就能连发整页 */
+    '/clipboard/works': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const items = (Array.isArray(body?.items) ? body.items : []).slice(0, 24)
+        if (!items.length) return bad(400, '没有要复制的作品')
+        const all = allworkOf(pixiv)
+        const dirs = new Map()
+        try {
+          for (const d of collectWorkDirs(all)) dirs.set(basename(d), d)
+        } catch { /* 作品根不存在 */ }
+        const outDir = join(home, 'clipboard', 'page-' + Date.now())
+        const files = []
+        const missing = []
+        for (const it of items) {
+          const name = safeName(String(it?.name || ''), 110)
+          if (!name) continue
+          let src = ''
+          const dir = dirs.get(name) || join(all, name)
+          try {
+            if (existsSync(dir)) {
+              const list = imageFilesOfWork(dir)
+              if (list.length) src = join(dir, list[0])
+            }
+          } catch { src = '' }
+          if (!src && it?.round && it?.id) {
+            const th = join(picksRootOf(pixiv), String(it.round), 'thumbs', String(it.id) + '.jpg')
+            if (existsSync(th)) src = th
+          }
+          if (!src) { missing.push(name); continue }
+          files.push(src)
+        }
+        if (!files.length) return bad(400, '这些作品在本机都没有文件（既没下载，也没有缩略图）')
+        mkdirSync(outDir, { recursive: true })
+        const paths = []
+        for (const f of files) {
+          const to = join(outDir, basename(f))
+          try { copyFileSync(f, to); paths.push(to) } catch { /* 单件失败就跳过 */ }
+        }
+        if (!paths.length) return bad(500, '复制到剪贴板临时目录失败')
+        const ps = "Add-Type -AssemblyName System.Windows.Forms; $c = New-Object System.Collections.Specialized.StringCollection; "
+          + paths.map((p) => "[void]$c.Add('" + String(p).replace(/'/g, "''") + "')").join('; ')
+          + "; [System.Windows.Forms.Clipboard]::SetFileDropList($c)"
+        const rr = spawnSync('powershell.exe', ['-NoProfile', '-STA', '-Command', ps], { timeout: 30000, windowsHide: true })
+        if (rr.status !== 0) {
+          const why = String(rr.stderr || rr.error?.message || rr.error || 'powershell 返回失败').slice(0, 240)
+          log('设置剪贴板文件列表失败：' + why)
+          return bad(500, '设置剪贴板失败：' + why)
+        }
+        log('剪贴板放入 ' + paths.length + ' 个作品文件：' + outDir)
+        return ok({ count: paths.length, dir: outDir, missing })
       },
     },
 
@@ -5086,6 +5670,7 @@ const routes = {
           w.dlState = dlStateOf(w, st)
         }
         if (miss.length) void backfillWorkMeta(st, miss.slice(0, 18))
+        void backfillAnims(pixiv, 2)
         try {
           const ai = (list.works || []).filter((w) => w.aiGenerated)
           if (ai.length) {
@@ -5370,10 +5955,17 @@ const routes = {
     '/rate-lib': {
       methods: ['POST'],
       handler: (q, body) => {
-        const name = safeName(body?.name || '', 110)
-        if (!name) return bad(400, '缺少 name')
+        /* safeName('') 会给「未命名」，先判空再归一化，否则「只给 id」那条永远走不到 */
+        const rawName = String(body?.name || '').trim()
+        let name = rawName ? safeName(rawName, 110) : ''
         const score = scoreBody(body?.score)
         const state = load()
+        /* 只给 id 也行：作品库的目录名末尾就是 _<id>，替前端省掉「先查名字」这一步 */
+        if (!name && body?.id) {
+          const wid = String(body.id).replace(/\D/g, '')
+          if (wid) name = Object.keys(state.library || {}).find((k) => String(k).endsWith('_' + wid)) || ''
+        }
+        if (!name) return bad(400, '缺少 name（这件还没进作品库？先「收进来」再打分）')
         state.library[name] = { ...(state.library[name] || {}), score, note: String(body?.note || ''), updatedAt: new Date().toISOString() }
         save()
         // 作品库的目录名末尾带 `_<id>`，有的话也能触发「评分达标自动点赞/收藏」
@@ -5509,6 +6101,7 @@ const routes = {
           if (x?.ok) { saved += 1; bytes += Number(x.bytes) || 0 } else if (x) failed.push({ id: x.id, error: x.error })
         }
         feedback()
+        try { pruneDownloadedThumbs() } catch { /* ignore */ }
         return ok({ round, ids, saved, bytes, failed })
       },
     },
@@ -5565,6 +6158,7 @@ const routes = {
         for (const n of workNames) if (state2.config.autoAddRated !== false) libraryAdd(state2, n, { source: 'round-batch' })
         save()
         feedback()
+        try { pruneDownloadedThumbs() } catch { /* ignore */ }
         return ok({ round, kind, name: target, download: downloadResult, results, applied })
       },
     },
@@ -5988,6 +6582,62 @@ const routes = {
       },
     },
 
+    '/collection/pin': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        try {
+          const st = load()
+          const r = collectionPin(st, String(body?.name || ''), body?.pin !== false, !!body?.gold)
+          if (!r.ok) return bad(400, r.error)
+          save()
+          log('收藏夹置顶：' + r.name + ' → ' + (r.pin ? '置顶' : '取消置顶'))
+          return ok(r)
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
+    '/collection/swap': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        try {
+          const st = load()
+          const r = collectionSwap(st, String(body?.a || ''), String(body?.b || ''))
+          if (!r.ok) return bad(400, r.error)
+          save()
+          log('收藏夹换位：' + r.a + ' ⇄ ' + r.b)
+          return ok(r)
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
+    '/collection/order': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        try {
+          const st = load()
+          const r = collectionOrder(st, body?.names)
+          save()
+          return ok(r)
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
+    '/collection/pin-order': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        try {
+          const st = load()
+          const r = collectionPinOrder(st, body?.names)
+          save()
+          return ok(r)
+        } catch (e) {
+          return bad(500, String(e?.message ?? e).slice(0, 200))
+        }
+      },
+    },
     '/collection/create': {
       methods: ['POST'],
       handler: (q, body) => {
@@ -6523,6 +7173,8 @@ export function apply(ctx) {
   } catch (e) { log(`工作区注册跳过：${e?.message ?? e}`) }
   let state = loadState(home)
   const stateRef = { state }
+  /* 启动后延迟清理一次：已下载的作品不再保留 thumbs 缓存（十几秒的后台小活） */
+  setTimeout(() => { try { pruneDownloadedThumbs() } catch { /* ignore */ } }, 9000)
   if (!existsSync(join(home, 'gallery.json'))) saveState(home, state)
 
   // 新用户：首次启动自动生成一份「个人偏好预设」，不用手动保存一次

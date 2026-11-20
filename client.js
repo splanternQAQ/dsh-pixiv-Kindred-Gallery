@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.3.5'
+    const CLIENT_BUILD = '1.5.0'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -34,6 +34,389 @@ window.__ModuleLoader__.load({
     } catch { /* ignore */ }
     const pgReload = () => {
       try { location.reload() } catch { /* ignore */ }
+    }
+    /* 顶栏版本号：点一下＝检查更新（在宿主里整页重取会报错，这条路已经撤掉了）。
+       真正的检查动作挂在 GalleryTab2 里，这里只留一个模块级钩子。 */
+    let pgUpdateCheckHook = null
+    const pgAskUpdateCheck = () => {
+      try { pgUpdateCheckHook?.() } catch { /* ignore */ }
+    }
+    /* 进主界面一律从最上面看起：页签切回来时宿主会保留滚动位置，这里主动拽回顶部 */
+    const pgScrollMainToTop = () => {
+      /* 全屏时滚动条长在 [data-pg-main] 上，非全屏时外层还会套一层 dsh 的滚动容器，
+         所以要把「能滚的祖先」全部复位，最后再用第一块内容 scrollIntoView 钉住顶部。 */
+      try {
+        const scroller = (el) => {
+          try {
+            const cs = window.getComputedStyle(el)
+            return /(auto|scroll|overlay)/.test(String(cs.overflowY || ''))
+          } catch { return false }
+        }
+        document.querySelectorAll('[data-pg-main]').forEach((el) => {
+          el.scrollTop = 0
+          el.scrollLeft = 0
+          let p = el.parentElement
+          let guard = 0
+          while (p && guard < 14) {
+            if (scroller(p)) { p.scrollTop = 0; p.scrollLeft = 0 }
+            p = p.parentElement
+            guard += 1
+          }
+          const first = el.firstElementChild
+          if (first && typeof first.scrollIntoView === 'function') {
+            first.scrollIntoView({ block: 'start', inline: 'nearest' })
+          }
+        })
+        const se = document.scrollingElement || document.documentElement
+        if (se) se.scrollTop = 0
+        window.scrollTo(0, 0)
+      } catch { /* ignore */ }
+    }
+    /* 进主界面后把「外层滚动位置」按住：宿主收到新消息 / 新数据时会把对话容器 scrollTo 到底，
+       overflow-anchor 拦不住；而且 overflow:hidden 的容器照样能被程序滚，只按 overflowY 白名单挑祖先会漏。
+       这里改成 200ms 一次的扫荡盘：沿 [data-pg-main] 的祖先链（再加 scrollingElement / body）把 scrollTop 归零，
+       画廊自己那块不碰，主人动手后 600ms 内一律不干预。 */
+    const pgPinMainTop = (ms = 0) => {
+      const chain = () => {
+        const out = []
+        try {
+          document.querySelectorAll('[data-pg-main]').forEach((el) => {
+            let p = el.parentElement
+            let guard = 0
+            while (p && guard < 40) { out.push(p); p = p.parentElement; guard += 1 }
+          })
+        } catch { /* ignore */ }
+        for (const x of [document.scrollingElement, document.documentElement, document.body]) if (x) out.push(x)
+        return out
+      }
+      let lastUser = 0
+      let stopped = false
+      const mark = () => { lastUser = Date.now() }
+      const onScroll = (e) => {
+        if (Date.now() - lastUser < 600) return
+        const tgt = e.target && e.target.nodeType === 1 ? e.target : null
+        if (!tgt || typeof tgt.scrollTop !== 'number') return
+        if (tgt.closest && tgt.closest('[data-pg-main]')) return
+        if (tgt.scrollTop > 0) tgt.scrollTop = 0
+      }
+      const sweep = () => {
+        if (stopped) return
+        if (Date.now() - lastUser < 600) return
+        for (const n of chain()) {
+          try { if (n.scrollTop > 0) n.scrollTop = 0 } catch { /* ignore */ }
+        }
+        try { if (window.scrollY > 0) window.scrollTo(0, 0) } catch { /* ignore */ }
+      }
+      const opts = { passive: true, capture: true }
+      window.addEventListener('wheel', mark, opts)
+      window.addEventListener('touchstart', mark, opts)
+      window.addEventListener('pointerdown', mark, true)
+      window.addEventListener('keydown', mark, true)
+      document.addEventListener('scroll', onScroll, true)
+      const timer = window.setInterval(sweep, 200)
+      sweep()
+      const stop = () => {
+        if (stopped) return
+        stopped = true
+        window.clearInterval(timer)
+        window.removeEventListener('wheel', mark, true)
+        window.removeEventListener('touchstart', mark, true)
+        window.removeEventListener('pointerdown', mark, true)
+        window.removeEventListener('keydown', mark, true)
+        document.removeEventListener('scroll', onScroll, true)
+      }
+      if (ms > 0) window.setTimeout(stop, ms)
+      return stop
+    }
+    /* 全局悬停提示：所有带 data-pg-tip 的元素共用一个挂在 body 上的小浮层。
+       放在 body 上才不会被执行区/卡片的 overflow 裁掉；默认显示在元素上方，
+       上方不够就翻到下方，左右夹在视口里。原生 title 在悬停时先摘下来，免得两个提示一起冒。 */
+    /* 全局悬停提示：一个挂在 body 上的浮层，所有 data-pg-tip 共用。
+       三条硬规矩：①默认显示在目标上方；②渲染后按真实尺寸重新定位，上方放不下才翻到下方；
+       ③始终避开鼠标光标（光标附近 15px 的方框，浮层不许压上去），实在挤就挪到侧边。 */
+    /* 全局悬停提示：整块插件共用一个浮层（挂 body），三条硬规矩——
+       ①默认悬在目标上方，量完真实尺寸才定位，上方放不下才翻到下方；
+       ②永远避开鼠标光标（光标周围 15px 视为禁区），撞上就抬到光标上方/翻到下方/挪到侧边；
+       ③原生 title 进 DOM 就接管（MutationObserver 全量转成 data-pg-tip），所以顶栏、设置页、
+         各个弹窗里一个都不漏，也不用等悬停那一下才改属性。 */
+    const pgTipState = { box: null, el: null, on: false, raf: 0, obs: null }
+    const pgTipPointer = { x: -1, y: -1 }
+    const PG_TIP_CURSOR = 15
+    const PG_TIP_SCOPE = '[data-pg-main],[data-pg-modal],[data-pg-sheet],[data-pg-theme],[data-pg-head],[data-pg-lkpanel]'
+    const pgTipInScope = (el) => !!(el && el.closest && el.closest(PG_TIP_SCOPE))
+    const pgTipTheme = (el) => {
+      try {
+        const own = el && el.closest ? el.closest('[data-pg-theme]') : null
+        const attr = own && own.getAttribute('data-pg-theme')
+        if (attr) return attr
+      } catch { /* ignore */ }
+      try {
+        const root = document.querySelector('[data-pg-main]')
+        const host = root && root.closest ? root.closest('[data-pg-theme]') : null
+        const attr = host && host.getAttribute('data-pg-theme')
+        if (attr) return attr
+      } catch { /* ignore */ }
+      try { return String(PG_THEME || 'dark') } catch { return 'dark' }
+    }
+    const pgTipBox = () => {
+      if (pgTipState.box && document.body.contains(pgTipState.box)) return pgTipState.box
+      const box = document.createElement('div')
+      box.setAttribute('data-pg-tipbox', '')
+      box.style.cssText = [
+        'position:fixed', 'z-index:2147483000', 'pointer-events:none', 'display:none',
+        'max-width:min(420px,80vw)', 'padding:6px 10px', 'border-radius:9px',
+        'font-size:12px', 'line-height:1.55', 'white-space:pre-line', 'word-break:break-word',
+        'max-height:min(62vh,520px)', 'overflow:hidden',
+        'box-shadow:0 12px 28px -10px rgba(0,0,0,.45)',
+      ].join(';')
+      document.body.appendChild(box)
+      pgTipState.box = box
+      return box
+    }
+    const pgTipHide = () => {
+      pgTipState.el = null
+      if (pgTipState.raf) { window.cancelAnimationFrame(pgTipState.raf); pgTipState.raf = 0 }
+      if (pgTipState.box) pgTipState.box.style.display = 'none'
+    }
+    const pgTipCursorRect = () => ({
+      left: pgTipPointer.x - PG_TIP_CURSOR, right: pgTipPointer.x + PG_TIP_CURSOR,
+      top: pgTipPointer.y - PG_TIP_CURSOR, bottom: pgTipPointer.y + PG_TIP_CURSOR,
+    })
+    const pgTipHitsCursor = (r) => {
+      if (pgTipPointer.x < 0 || pgTipPointer.y < 0) return false
+      const m = pgTipCursorRect()
+      return !(r.right < m.left || r.left > m.right || r.bottom < m.top || r.top > m.bottom)
+    }
+    const pgTipPlace = () => {
+      const el = pgTipState.el
+      const box = pgTipState.box
+      if (!el || !box) return
+      box.style.visibility = 'hidden'
+      box.style.display = 'block'
+      const r = el.getBoundingClientRect()
+      const bw = box.offsetWidth || 0
+      const bh = box.offsetHeight || 0
+      const vw = window.innerWidth || 1280
+      const vh = window.innerHeight || 800
+      const gap = 10
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, Math.max(lo, hi)))
+      let left = clamp(r.left + r.width / 2 - bw / 2, 8, vw - bw - 8)
+      let top = r.top - bh - gap
+      if (top < 8) top = r.bottom + gap
+      const rectOf = () => ({ left, right: left + bw, top, bottom: top + bh })
+      if (pgTipHitsCursor(rectOf())) {
+        const m = pgTipCursorRect()
+        const aboveCursor = m.top - bh - 8
+        const belowCursor = m.bottom + 8
+        if (aboveCursor >= 8) top = aboveCursor
+        else if (belowCursor + bh <= vh - 8) top = belowCursor
+        else if (m.right + 12 + bw <= vw - 8) left = m.right + 12
+        else if (m.left - 12 - bw >= 8) left = m.left - 12 - bw
+        top = clamp(top, 8, vh - bh - 8)
+        left = clamp(left, 8, vw - bw - 8)
+      }
+      box.style.left = Math.round(left) + 'px'
+      box.style.top = Math.round(top) + 'px'
+      box.style.visibility = 'visible'
+    }
+    const pgTipShow = (el) => {
+      const text = String(el.getAttribute('data-pg-tip') || '')
+      if (!text) return
+      const box = pgTipBox()
+      const light = pgTipTheme(el) === 'light'
+      box.style.background = light ? 'rgba(255,255,255,.99)' : 'rgba(24,27,34,.97)'
+      box.style.color = light ? '#111827' : '#e6ecf6'
+      box.style.border = light ? '1px solid rgba(0,0,0,.16)' : '1px solid rgba(255,255,255,.18)'
+      /* 标了 data-pg-tip-rainbow 的保留炫彩字 */
+      const rainbow = el.hasAttribute('data-pg-tip-rainbow')
+      while (box.firstChild) box.removeChild(box.firstChild)
+      const node = document.createElement(rainbow ? 'b' : 'span')
+      if (rainbow) node.setAttribute('data-pg-tiprainbow', '')
+      node.textContent = text
+      box.appendChild(node)
+      pgTipState.el = el
+      pgTipPlace()
+    }
+    /* 把一个元素的 title 换成受控提示；已经换过且内容没变就跳过 */
+    const pgTipTake = (el) => {
+      if (!el || el.nodeType !== 1) return
+      if (!el.hasAttribute('title')) return
+      const txt = el.getAttribute('title')
+      if (!txt) return
+      if (!pgTipInScope(el)) return
+      /* 禁用控件在 Chromium 里不派发指针事件，接了反而会把原生提示弄没，留给系统 */
+      if (el.disabled === true) return
+      el.setAttribute('data-pg-tip', txt)
+      el.removeAttribute('title')
+    }
+    const pgTipTakeTree = (root) => {
+      if (!root || root.nodeType !== 1) return
+      if (root.hasAttribute && root.hasAttribute('title')) pgTipTake(root)
+      const list = root.querySelectorAll ? root.querySelectorAll('[title]') : []
+      for (let k = 0; k < list.length; k++) pgTipTake(list[k])
+    }
+    const pgTipWatch = () => {
+      if (pgTipState.obs || typeof MutationObserver === 'undefined') return
+      pgTipState.obs = new MutationObserver((muts) => {
+        for (const m of muts) {
+          if (m.type === 'attributes') { pgTipTake(m.target); continue }
+          if (m.type === 'childList') {
+            for (const n of m.addedNodes) if (n.nodeType === 1) pgTipTakeTree(n)
+          }
+        }
+      })
+      pgTipState.obs.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] })
+      pgTipTakeTree(document.body)
+    }
+    const pgTipInstall = () => {
+      if (pgTipState.on) return
+      pgTipState.on = true
+      const track = (e) => {
+        pgTipPointer.x = e.clientX
+        pgTipPointer.y = e.clientY
+      }
+      document.addEventListener('pointermove', (e) => {
+        track(e)
+        if (!pgTipState.el) return
+        if (pgTipState.raf) return
+        pgTipState.raf = window.requestAnimationFrame(() => {
+          pgTipState.raf = 0
+          if (pgTipState.el) pgTipPlace()
+        })
+      }, true)
+      document.addEventListener('pointerdown', track, true)
+      document.addEventListener('wheel', track, true)
+      document.addEventListener('pointerover', (e) => {
+        track(e)
+        const tgt = e.target
+        if (!tgt || tgt.nodeType !== 1) return
+        pgTipTake(tgt)
+        const own = tgt.closest('[data-pg-tip]')
+        if (own) pgTipShow(own)
+        else if (pgTipState.el) pgTipHide()
+      }, true)
+      document.addEventListener('pointerout', (e) => {
+        const tgt = e.target
+        if (!tgt || tgt.nodeType !== 1) return
+        const own = pgTipState.el
+        if (!own) return
+        if (e.relatedTarget && own.contains(e.relatedTarget)) return
+        pgTipHide()
+      }, true)
+      document.addEventListener('scroll', pgTipHide, true)
+      window.addEventListener('resize', pgTipHide)
+      window.addEventListener('blur', pgTipHide)
+      pgTipWatch()
+    }
+    if (typeof document !== 'undefined') pgTipInstall()
+
+/* ── 弹窗键盘层：Esc 取消 / Enter 确认 ──
+   插件里所有浮层都是 div[data-pg-modal] 套 div[data-pg-sheet]；
+   取消优先点 [data-pg-setx] / [data-pg-spreadclose]，其次按文案找取消类按钮，最后点背板；
+   确认优先点 [data-primary]（45 处已在用），没有就取面板里最后一个不像取消的按钮。
+   注册在 window 捕获阶段，先于灯箱与设置页自己的 Esc 处理，免得一次按键关掉两层。 */
+const PG_DLG_CANCEL = ['取消', '关闭', '返回', '否', '先不读', '稍后再说', '先不用', '好了', '知道了', '×', '✕', '关闭设置']
+const pgDlgClean = (el) => String((el && el.textContent) || '').replace(/\s+/g, '')
+function pgModalTop() {
+  if (typeof document === 'undefined') return null
+  let best = null
+  let bestZ = -Infinity
+  const all = document.querySelectorAll('[data-pg-modal]')
+  for (let i = 0; i < all.length; i += 1) {
+    const el = all[i]
+    if (!el.isConnected || !el.getClientRects || !el.getClientRects().length) continue
+    const cs = window.getComputedStyle(el)
+    if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue
+    const z = Number(cs.zIndex)
+    const zz = Number.isFinite(z) ? z : 0
+    if (zz >= bestZ) { best = el; bestZ = zz }   // 同层级取 DOM 里靠后的那个
+  }
+  return best
+}
+function pgModalButtons(modal) {
+  const scope = modal.querySelector('[data-pg-sheet]') || modal
+  return Array.from(scope.querySelectorAll('button'))
+    .filter((b) => !b.disabled && b.getClientRects().length > 0)
+}
+function pgModalCancel(modal) {
+  const known = modal.querySelector('[data-pg-setx], [data-pg-spreadclose], [data-pg-sheetclose]')
+  if (known && known.getClientRects().length > 0) { try { known.click(); return true } catch { /* ignore */ } }
+  const btns = pgModalButtons(modal)
+  const hit = btns.find((b) => PG_DLG_CANCEL.includes(pgDlgClean(b)))
+    || btns.find((b) => PG_DLG_CANCEL.some((w) => w.length > 1 && pgDlgClean(b).includes(w)))
+  if (hit) { try { hit.click(); return true } catch { /* ignore */ } }
+  try { modal.click(); return true } catch { return false }
+}
+function pgModalPrimary(modal) {
+  const btns = pgModalButtons(modal)
+  const prim = btns.find((b) => b.hasAttribute('data-primary'))
+  if (prim) return prim
+  const rest = btns.filter((b) => !PG_DLG_CANCEL.includes(pgDlgClean(b)))
+  return rest.length ? rest[rest.length - 1] : null
+}
+function pgDialogKeys() {
+  if (typeof window === 'undefined' || window.__pgDialogKeys) return
+  window.__pgDialogKeys = true
+  const onKey = (e) => {
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+    if (e.key !== 'Escape' && e.key !== 'Enter') return
+    if (e.isComposing) return
+    const t = e.target
+    // 灯箱 / 平铺大图有自己的 Esc / Enter，别被这一层抢走（否则一下关掉整张卡片）
+    if (t && t.closest && t.closest('[data-pg-lightbox],[data-pg-spread]')) return
+    const modal = pgModalTop()
+    if (!modal) return
+    const tag = String((t && t.tagName) || '').toUpperCase()
+    if (e.key === 'Escape') {
+      // 下拉/选择器先自己收：它们内部已经处理 Esc
+      if (t && t.closest && t.closest('[data-pg-pillmenu],[data-pg-kbselect],[role="listbox"]')) return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      pgModalCancel(modal)
+      return
+    }
+    // Enter：文本域里是换行；输入框/下拉交给字段自己（回车加标签、回车保存等）
+    if (tag === 'TEXTAREA' || (t && t.isContentEditable)) return
+    if (tag === 'INPUT' || tag === 'SELECT') return
+    // 焦点已经在弹窗里的按钮上：交给浏览器原生点击
+    if ((tag === 'BUTTON' || tag === 'A') && t && modal.contains(t)) return
+    // 卡片二级页 / 作品详情页是一整页，不是「确认框」：Enter 不该在那里点主按钮（会误触下载原图）
+    if (modal.querySelector('[data-pg-banner],[data-pg-work],[data-pg-detail]')) return
+    const btn = pgModalPrimary(modal)
+    if (!btn) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    try { btn.click() } catch { /* ignore */ }
+  }
+  window.addEventListener('keydown', onKey, true)
+}
+pgDialogKeys()
+
+
+    /* 版本号那颗「检查更新」装在弹窗里，装完给一颗立即重启 */
+    const pgRestartDsh = async () => {
+      try {
+        for (const p of ['/api/pixiv-gallery/restart-dsh', '/pixiv-gallery/api/restart-dsh']) {
+          const r = await fetch(p, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' })
+          if (r.status !== 404) return
+        }
+      } catch { /* ignore */ }
+    }
+    /* 这件作品自带的标签是不是全在喜爱标签里（和作品库那句「所有标签你都喜欢」同一套判定） */
+    const pgTagsAllLoved = (w, lib) => {
+      /* 注意：这里必须自带归一化与特殊标签判定 —— 不能引用组件里的 normTagKey / isSpecialTagName，
+         那两个都在别的作用域里，引用会抛异常并被下面的 catch 吞掉，于是永远返回 false（炫彩边框因此不亮）。 */
+      try {
+        const nk = (t) => String(t || '').toLowerCase().replace(/[\s_\-（）()]/g, '')
+        const special = (x) => /^(r-?18g?|ai|ai生成|ai作画|生成ai)$/i.test(String(x || '').trim())
+        const fav = new Set((((lib && lib.favoriteTags) || [])).map((x) => nk(typeof x === 'string' ? x : (x && x.name) || '')).filter(Boolean))
+        if (!fav.size) return false
+        const rm = (w && w.tagRm ? w.tagRm : []).map(nk)
+        const own = ((w && w.tags) || [])
+          .map((t) => (typeof t === 'string' ? t : (t && t.name) || ''))
+          .filter((t) => t && !rm.includes(nk(t)) && !special(t))
+        return own.length > 0 && own.every((t) => fav.has(nk(t)))
+      } catch { return false }
     }
     /* 刷新确认用「直接挂到 body 上的小条」，不走 React 树：
        挂在页面里的话，只有〔知心画廊〕那个 tab 正好开着才看得见，其它 tab 下等于没有。
@@ -153,7 +536,16 @@ window.__ModuleLoader__.load({
     /* Electron 桌面端不支持 window.prompt / window.confirm，统一用页面内对话框。 */
     function PromptDialog({ req, onDone }) {
       const [val, setVal] = React.useState(req.def || '')
+      const promptInputRef = React.useRef(null)
       React.useEffect(() => { setVal(req.def || '') }, [req])
+      /* 不再用 autoFocus：Electron 里自动聚焦会把外层对话容器一起滚到底，改成下一帧手动聚焦且不滚 */
+      React.useEffect(() => {
+        if (req.kind !== 'prompt') return undefined
+        const raf = window.requestAnimationFrame(() => {
+          try { promptInputRef.current?.focus({ preventScroll: true }) } catch { /* ignore */ }
+        })
+        return () => window.cancelAnimationFrame(raf)
+      }, [req])
       const ok = () => onDone(req.kind === 'prompt' ? val : true)
       const cancel = () => onDone(req.kind === 'prompt' ? null : false)
       return h('div', { 'data-pg-modal': '', style: { zIndex: 400 }, onClick: cancel },
@@ -161,7 +553,7 @@ window.__ModuleLoader__.load({
           h('div', { 'data-pg-title': '', 'data-long': (String(req.title || '').includes('\n') || String(req.title || '').length > 42) ? '' : undefined }, req.title || ''),
           req.message ? h('div', { 'data-pg-note': '', style: { whiteSpace: 'pre-wrap', lineHeight: 1.6 } }, req.message) : null,
           req.kind === 'prompt' ? h('input', {
-            'data-pg-input': '', autoFocus: true, value: val,
+            'data-pg-input': '', ref: promptInputRef, value: val,
             onChange: (e) => setVal(e.target.value),
             onKeyDown: (e) => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') cancel() },
           }) : null,
@@ -233,7 +625,7 @@ window.__ModuleLoader__.load({
       }, [data?.autoInstall, data?.force, installing, done, info?.update])
       const notesTitle = info?.noteSource === 'README' ? '这一版改了什么（README 更新日志）'
         : info?.noteSource === 'commit' ? '最新提交说明' : '更新内容'
-      return h('div', { 'data-pg-modal': '', style: { zIndex: 420 }, onClick: onClose },
+      return h('div', { 'data-pg-modal': '', 'data-pg-updpage': '', 'data-pg-theme': PG_THEME, style: { zIndex: 420 }, onClick: onClose },
         h('div', {
           'data-pg-sheet': '', 'data-pg-upd': '',
           style: { maxWidth: '560px', width: 'min(94vw, 560px)', padding: '18px 20px' },
@@ -246,15 +638,15 @@ window.__ModuleLoader__.load({
           h('div', { 'data-pg-note2': '', style: { marginTop: '10px', lineHeight: 1.8 } },
             `已把 ${done.from || ''} 更新到 ${done.installed || '最新版'}（${done.files || 0} 个文件）。`,
             h('br'), '重启 DSH 后生效。旧版本备份在：',
-            h('br'), h('span', { style: { wordBreak: 'break-all', color: '#94a3b8' } }, done.backup || '—')),
+            h('br'), h('span', { style: { wordBreak: 'break-all', color: 'var(--dsw-alias-label-secondary,#94a3b8)' } }, done.backup || '—')),
           h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' } },
             h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose }, '稍后重启'),
             h('button', { 'data-pg-btn': '', 'data-primary': '', type: 'button', onClick: onRestart }, '立即重启'))) : null,
 
         !done && info ? h('div', null,
           h('div', { style: { display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginTop: '10px' } },
-            h('span', { style: { fontSize: '15px', color: '#94a3b8' } }, `当前 ${info.version || ''}`),
-            h('span', { style: { fontSize: '19px', fontWeight: 900, color: info.update ? '#fbbf24' : '#86efac' } },
+            h('span', { style: { fontSize: '15px', color: 'var(--dsw-alias-label-secondary,#94a3b8)' } }, `当前 ${info.version || ''}`),
+            h('span', { style: { fontSize: '19px', fontWeight: 900, color: info.update ? '#f59e0b' : '#10b981' } },
               info.update ? `→ ${info.latest}` : (data?.force ? '重装仓库最新代码' : `已是最新（${info.latest || info.version}）`))),
           h('div', { 'data-pg-note2': '', style: { marginTop: '8px', lineHeight: 1.7 } },
             `更新时间：${fmtTime(info.updatedAt)}`, info.sha ? `｜最新提交 ${info.sha}` : '',
@@ -263,14 +655,14 @@ window.__ModuleLoader__.load({
             h('a', { href: info.url || info.repo, target: '_blank', rel: 'noreferrer', 'data-pg-link': '' }, '在浏览器打开仓库')),
           info.fallback ? h('div', {
             'data-pg-note2': '',
-            style: { marginTop: '6px', color: '#fbbf24' },
+            style: { marginTop: '6px', color: '#f59e0b' },
           }, 'GitHub 接口被限流，已自动改走备用通道读取（Star 数与提交号可能稍旧，不影响安装）。') : null,
           notes.length ? h('div', {
             'data-pg-updnotes': '',
             style: { marginTop: '12px', maxHeight: '240px', overflow: 'auto', padding: '10px 12px', borderRadius: '10px', background: 'rgba(148,163,184,.08)', lineHeight: 1.7 },
           },
           h('div', { 'data-pg-note2': '', style: { marginBottom: '6px' } }, notesTitle),
-          notes.map((s, i) => h('div', { key: i, style: { fontSize: '13px', color: '#e2e8f0' } }, s))) 
+          notes.map((s, i) => h('div', { key: i, style: { fontSize: '13px', color: 'var(--pg-upd-text,#e2e8f0)' } }, s))) 
             : h('div', { 'data-pg-note2': '', style: { marginTop: '12px' } }, '远程仓库没有写更新说明。'),
           err ? h('div', { 'data-pg-note2': '', style: { color: '#f87171', marginTop: '10px', whiteSpace: 'pre-wrap' } }, `安装失败：${err}`) : null,
           h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' } },
@@ -1533,7 +1925,6 @@ const AUTHOR_LINK_NAME = { twitter: 'X / Twitter', bilibili: '哔哩哔哩', ske
     const artUrl = (w) => `https://www.pixiv.net/artworks/${encodeURIComponent(String(w?.id || ''))}`
     const authorUrl = (w) => (w?.artistId ? `https://www.pixiv.net/users/${encodeURIComponent(String(w.artistId))}` : '')
 
-
     const DUAL_TIP = '原始均分把这一轮里打过分的作品全部算进去（包括后来移除的）；当前均分只算还在这一轮里的作品。只有一个数说明没有移出过已评分的作品。'
 
     function DualScore({ original, final, removed, compact }) {
@@ -1720,7 +2111,7 @@ function DoneFx({ perfect, text, tone }) {
     const ACH_LIST = [
       { id: 'oo', name: '《其实OO还挺有意思的》', hint: '你真不会坠机吗？', color: '#c084fc', title: '原来你还好这一口。。。', text: '已达成隐藏成就：《其实OO还挺有意思的》', detail: '选择「涩涩·man！🚁」预设，并以 8 分或以上完成该预设里的任意一张新卡片。' },
       { id: 'loli', name: '《她们可是是能成为我母亲的女性啊！》', hint: '观看一些熟女', color: '#facc15', title: '我爱的是妈妈所以我不是萝莉控~', detail: '作品库里带萝莉 / 幼女类标签的作品超过 1000 件（ロリ、ろり、loli、萝莉等，一件带多个只算一次）。', text: '谁不喜欢幼女呢？娇小的体格，闪闪发光的眼眸，没有任何城府的纯洁之心，稍稍用力就能公主抱，而且会认真考虑成为我的麻麻/女友/妻子⚡⚡⚡啊！电得我好爽⚡；已达成隐藏成就：《她们可是是能成为我母亲的女性啊！》' },
-      { id: 'zenith', name: '《臻于至善》', hint: '这张是8分。。。不对，这样算是9分？', color: '#22c55e', title: '说不定后面真能实现每张卡片都是9分以上？', text: '已达成隐藏成就：《臻于至善》', detail: '累计完成 50 张新卡片后，某张卡片里至少手动删除过一件作品，且这张卡片最终总均分达到 8.9。' },
+      { id: 'zenith', name: '《臻于至善》', hint: '这张是8分。。。不对，这样算是9分？', color: '#22c55e', title: '说不定后面真能实现每张卡片都是9分以上？', text: '已达成隐藏成就：《臻于至善》', detail: '累计完成 50 张新卡片后，某张卡片里删除过作品（自动规则删掉的也算）、这张卡片至少有 5 张作品，且这张卡片最终总均分达到 8.9。' },
       { id: 'desire', name: '《欲求不满》', hint: '生活真是一潭死水。。。需要精液/妹汁来灌注活性（？', color: '#ffffff', title: '‘性’何尝不是一种生活调味剂？', text: '已达成隐藏成就：《欲求不满》', whisper: '精液，爱液，唾液，乳液，汗液，尿液，血液融在一起，塑造了一整个人', ann: '我看你只是看的标签比较猎奇罢了，虽然我觉得放尿和喷乳其实还是很涩的，大量体液表现没什么不好，别跟我说什么溅血之类的。。。那还是算了吧', detail: '连续生成的 20 张新卡片里，全部都是 R-18 或 R-18G。' },
       { id: 'scoring', name: '《打分小游戏》', hint: '可以当游戏玩？', color: '#fb923c', title: '我现在知道那些喜欢指指点点的人为什么这么喜欢指指点点了（', text: '已达成隐藏成就：《打分小游戏》', detail: '累计给 1000 件作品打过评分（包含后来被移出作品库的作品）。' },
       { id: 'long', name: '《细水长流》', hint: 'Patience is a...不是搞几张图怎么这么慢？', color: '#60a5fa', title: '真的有人能达成这个成就吗？春灯笼？', text: '我寻思很多人估计会直接让大肥鱼一次性解锁全成就，应该不会有人能够达成这个成就吧。。。大概。', detail: '从点下「立马跑一轮」到新卡片出现，等待时间累计超过 24 小时。' },
@@ -1796,6 +2187,8 @@ function DoneFx({ perfect, text, tone }) {
 [data-pg-signal][data-state="checking"]{cursor:progress;opacity:.8;}
 [data-pg-signal][data-state="bad"]{border-color:rgba(239,68,68,.42);}
 [data-pg-signal] b{font-weight:700;white-space:nowrap;}
+[data-pg-subitem]{cursor:help;border-bottom:1px dotted rgba(148,163,184,.5);}
+[data-pg-subsep]{opacity:.45;}
 [data-pg-sub]{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b919a);}
 [data-pg-grow]{flex:1;min-width:8px;}
 [data-pg-tabs]{display:flex;gap:3px;padding:3px;border-radius:10px;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.10));}
@@ -1825,6 +2218,11 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-msg]{font-size:11px;line-height:16px;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.10));color:var(--dsw-alias-label-secondary,inherit);word-break:break-all;}
 [data-pg-msg][data-tone=warn]{color:#f59e0b;}
 [data-pg-msg][data-tone=good]{color:#22c55e;}
+[data-pg-sidemenu]{position:fixed;z-index:2147483000;min-width:196px;padding:6px;border-radius:10px;border:1px solid rgba(127,127,127,.34);background:rgba(23,26,32,.99);box-shadow:0 14px 34px rgba(0,0,0,.45);font:500 12.5px/1.5 system-ui,-apple-system,sans-serif;color:#e6ecf6;}
+[data-pg-sidemenu][data-pg-theme="light"]{background:#ffffff;color:#111827;border-color:rgba(0,0,0,.14);box-shadow:0 14px 34px rgba(15,23,42,.18);}
+[data-pg-sidemenu] button{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:7px 10px;border-radius:7px;cursor:pointer;font:inherit;}
+[data-pg-sidemenu] button:hover{background:rgba(244,164,196,.18);color:#f9a8d4;}
+[data-pg-sidemenu] [data-pg-sidemenuhint]{padding:3px 10px 4px;font-size:11px;opacity:.62;}
 [data-pg-toast]{position:fixed;left:50%;top:74px;transform:translateX(-50%);z-index:9998;max-width:min(560px,86vw);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:750;line-height:1.45;text-align:center;color:#f0fdf4;background:rgba(20,83,45,.90);border:1px solid rgba(74,222,128,.55);box-shadow:0 10px 34px rgba(0,0,0,.42),0 0 0 1px rgba(74,222,128,.14);pointer-events:none;animation:pgtoastin .16s ease-out;backdrop-filter:blur(8px);}
 [data-pg-toast][data-tone=warn]{color:#fff7ed;background:rgba(120,53,15,.92);border-color:rgba(251,146,60,.6);box-shadow:0 10px 34px rgba(0,0,0,.42),0 0 0 1px rgba(251,146,60,.18);}
 [data-pg-toast][data-tone=page]{padding:6px 14px;font-size:12px;color:#e0f2fe;background:rgba(12,74,110,.88);border-color:rgba(56,189,248,.5);box-shadow:0 8px 26px rgba(0,0,0,.36);}
@@ -1995,6 +2393,8 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-workgrouphead] i{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--pg-fg3);}
 [data-pg-work]{border:1px solid var(--dsw-alias-bg-layer-3,rgba(127,127,127,.20));border-radius:11px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.05));}
 [data-pg-work][data-selected]{border-color:#3b82f6;box-shadow:0 0 0 1px #3b82f6 inset;}
+[data-pg-work]:focus{outline:2px solid rgba(56,189,248,.9);outline-offset:2px;}
+[data-pg-work]:focus-visible{outline:2px solid rgba(56,189,248,.9);outline-offset:2px;}
 [data-pg-work] .wcover{position:relative;aspect-ratio:4/3;overflow:hidden;background:rgba(127,127,127,.08);cursor:zoom-in;}
 [data-pg-work] .wcover img{width:100%;height:100%;object-fit:cover;display:block;}
 [data-pg-work] .wbody{padding:8px 9px 9px;display:flex;flex-direction:column;gap:3px;font-weight:700;}
@@ -2052,20 +2452,55 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-stats] b{color:var(--dsw-alias-label-primary,inherit);font-size:13px;}
 [data-pg-divider]{height:1px;background:var(--dsw-alias-bg-layer-3,rgba(127,127,127,.2));}
 [data-pg-lib]{display:grid;grid-template-columns:180px minmax(0,1fr);gap:14px;align-items:start;}
-[data-pg-side]{display:flex;flex-direction:column;gap:4px;position:sticky;top:0;}
+[data-pg-side]{display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:calc(100vh - 205px);min-height:360px;overflow:hidden;}
+[data-pg-collscroll]{max-height:266px;overflow-y:auto;overscroll-behavior:contain;padding-right:0;scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.22) transparent;}
+[data-pg-collscroll]:hover{scrollbar-color:rgba(148,163,184,.5) transparent;}
+[data-pg-collscroll]::-webkit-scrollbar,[data-pg-tagscroll]::-webkit-scrollbar{width:3px;height:3px;}
+[data-pg-collscroll]::-webkit-scrollbar-track,[data-pg-tagscroll]::-webkit-scrollbar-track{background:transparent;border:0;}
+[data-pg-collscroll]::-webkit-scrollbar-thumb,[data-pg-tagscroll]::-webkit-scrollbar-thumb{background:rgba(148,163,184,.2);border-radius:999px;}
+[data-pg-collscroll]:hover::-webkit-scrollbar-thumb,[data-pg-tagscroll]:hover::-webkit-scrollbar-thumb{background:rgba(148,163,184,.55);}
+[data-pg-taggrp]{flex:1 1 auto;min-height:0;}
+[data-pg-tagscroll]{flex:1 1 auto;min-height:120px;overflow-y:auto;overscroll-behavior:contain;padding-right:0;scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.22) transparent;}
+[data-pg-tagscroll]:hover{scrollbar-color:rgba(148,163,184,.5) transparent;}
+[data-pg-collitem][data-swapping]{opacity:.55;outline:2px dashed rgba(56,189,248,.75);outline-offset:-2px;cursor:grabbing;}
+[data-pg-collitem][data-collow]{outline:2px dashed rgba(245,197,66,.9);outline-offset:-2px;}
 [data-pg-side] button{text-align:left;border:0;background:transparent;color:var(--dsw-alias-label-secondary,inherit);font:inherit;font-size:12px;padding:6px 8px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:6px;}
 [data-pg-side] button:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));}
+[data-pg-side] [data-pg-libentry]{margin:2px 0 6px;padding:10px 14px;border-radius:10px;border:1px solid rgba(244,164,196,.8);background:transparent;color:rgba(244,164,196,.95);font-size:20px;font-weight:900;letter-spacing:0;justify-content:space-between;gap:8px;overflow:visible;}
+[data-pg-side] [data-pg-libentry] [data-pg-libentryname]{flex:1 1 auto;min-width:0;text-align:left;margin-left:0;font-size:13px;font-weight:900;letter-spacing:0;opacity:1;white-space:nowrap;overflow:visible;text-overflow:clip;color:inherit !important;}
+[data-pg-side] [data-pg-libentry],[data-pg-side] [data-pg-libentry] [data-pg-libentryname],[data-pg-side] [data-pg-libentry] [data-pg-libentrynum]{color:rgba(244,164,196,.96) !important;}
+[data-pg-side] [data-pg-libentry] [data-pg-libentrynum]{flex:0 0 auto;margin-left:auto;padding-left:6px;font-size:20px;font-weight:900;opacity:1;line-height:1.15;}
+[data-pg-side] [data-pg-libentry]:hover{border-color:rgba(244,164,196,1);}
+[data-pg-side] [data-pg-libentry][data-on]{border-color:rgba(244,164,196,1);background:transparent;}
+[data-pg-theme="light"] [data-pg-side] [data-pg-libentry]{border-color:rgba(219,89,150,.8);background:transparent;color:rgba(219,89,150,1);}
+[data-pg-theme="light"] [data-pg-side] [data-pg-libentry],[data-pg-theme="light"] [data-pg-side] [data-pg-libentry] [data-pg-libentryname],[data-pg-theme="light"] [data-pg-side] [data-pg-libentry] [data-pg-libentrynum]{color:rgba(219,89,150,1) !important;opacity:1;}
+[data-pg-theme="light"] [data-pg-side] [data-pg-libentry]:hover{border-color:rgba(219,89,150,.95);}
+[data-pg-theme="light"] [data-pg-side] [data-pg-libentry][data-on]{border-color:rgba(219,89,150,.95);background:transparent;}
 [data-pg-side] button[data-target]{box-shadow:inset 0 0 0 1px rgba(250,204,21,.85),0 0 10px rgba(250,204,21,.2);border-color:rgba(250,204,21,.5);}
 [data-pg-side] button[data-locked]{opacity:.42;pointer-events:none;cursor:default;}
 [data-pg-side] button[data-on]{background:rgba(59,130,246,.18);color:var(--dsw-alias-label-primary,inherit);font-weight:600;}
-[data-pg-side] button span{margin-left:auto;font-size:10px;opacity:.65;}
+[data-pg-side] [data-pg-sidehead]{font-size:13.5px;font-weight:900;letter-spacing:.03em;padding:9px 8px 5px;display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;color:rgba(148,163,184,.92);}
+[data-pg-side] [data-pg-sidehead] [data-pg-sideheadtext]{font-size:13.5px;font-weight:900;}
+[data-pg-side] [data-pg-sidehead] [data-pg-fold]{flex:none;font-size:11px;line-height:1;opacity:.9;transition:transform .18s;}
+[data-pg-side] [data-pg-sidegrp][data-folded] [data-pg-fold]{transform:rotate(-90deg);}
+[data-pg-side] [data-pg-sidehead] [data-pg-sidecount]{margin-left:auto;font-size:12px;font-weight:800;opacity:.95;}
+[data-pg-side] [data-pg-sidehead]:hover{color:rgba(226,232,240,1);}
+[data-pg-side] [data-pg-sidehead][data-tone="yellow"],[data-pg-side] [data-pg-sidehead][data-tone="yellow"] [data-pg-sidecount]{color:#facc15;}
+[data-pg-side] [data-pg-sidehead][data-tone="yellow"]:hover{color:#fde047;}
+[data-pg-side] [data-pg-sidehead][data-tone="sky"],[data-pg-side] [data-pg-sidehead][data-tone="sky"] [data-pg-sidecount]{color:#38bdf8;}
+[data-pg-side] [data-pg-sidehead][data-tone="sky"]:hover{color:#7dd3fc;}
+[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="yellow"],[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="yellow"] [data-pg-sidecount]{color:#f0b100;text-shadow:0 1px 0 rgba(255,255,255,.75);}
+[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="sky"],[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="sky"] [data-pg-sidecount]{color:#0ea5e9;text-shadow:0 1px 0 rgba(255,255,255,.75);}
+[data-pg-side] [data-pg-sidegrp][data-folded]{flex:0 0 auto;}
+[data-pg-side] button span:not([data-pg-libentryname]):not([data-pg-libentrynum]):not([data-pg-sideheadtext]):not([data-pg-sidecount]):not([data-pg-fold]){margin-left:auto;font-size:10px;opacity:.65;}
 [data-pg-lib-main]{display:flex;flex-direction:column;gap:10px;min-width:0;}
 [data-pg-lib-grid]{display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:10px;}
-[data-pg-lib-card]{border:1px solid var(--dsw-alias-bg-layer-3,rgba(127,127,127,.20));border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.05));cursor:pointer;}
-[data-pg-lib-card]:hover{border-color:rgba(59,130,246,.55);}
+[data-pg-lib-card]{border:2px solid rgba(56,189,248,.72);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,rgba(127,127,127,.05));cursor:pointer;transition:border-color .18s ease,box-shadow .18s ease;}
+[data-pg-lib-card]:hover{box-shadow:0 0 0 1px rgba(56,189,248,.16),0 0 22px 2px var(--pg-glow,rgba(59,130,246,.5)),0 16px 30px -16px rgba(2,8,23,.55);}
 [data-pg-lib-card] .lc{position:relative;aspect-ratio:3/4;background:rgba(127,127,127,.08);overflow:hidden;}
 [data-pg-lib-card] .lc img{width:100%;height:100%;object-fit:cover;display:block;}
-[data-pg-lib-card] .lb{padding:6px 8px 8px;display:flex;flex-direction:column;gap:2px;}
+[data-pg-lib-card] .lb{padding:6px 8px 8px;display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:hidden;transition:max-height .28s cubic-bezier(.4,0,.2,1),opacity .2s ease,padding .28s ease;}
+[data-pg-lib-grid][data-pg-pure] [data-pg-lib-card] .lb{max-height:0;opacity:0;padding-top:0;padding-bottom:0;pointer-events:none;}
 [data-pg-lib-card] .lt{font-size:14px;line-height:19px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:800;}
 [data-pg-lib-card] .ln{font-size:10.5px;color:var(--dsw-alias-label-tertiary,#8b919a);}
 [data-pg-lib-card] .la{font-size:12px;font-weight:650;line-height:16px;color:#93c5fd;opacity:.95;}
@@ -2116,15 +2551,12 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-lib-card][data-picked]{outline:2px solid #60a5fa;outline-offset:-2px;}
 [data-pg-lib-card][data-pg-downloaded][data-picked],[data-pg-lib-card][data-pg-dl="run"][data-picked]{outline-color:#facc15;}
 [data-pg-lib-card][data-pg-downloaded][data-picked]{outline-color:#facc15;}
-[data-pg-lib-card][data-pg-dl="done"]{border-color:rgba(56,189,248,.62)!important;}
 [data-pg-lib-card][data-pg-dl="fail"]{outline:2px solid rgba(239,68,68,.7);outline-offset:-2px;border-color:rgba(239,68,68,.85)!important;background:rgba(239,68,68,.12)!important;box-shadow:0 0 0 1px rgba(239,68,68,.3)!important;}
   [data-pg-lib-card][data-pg-dl="will"]{border-color:rgba(250,204,21,.55)!important;}
   [data-pg-lib-card][data-pg-dl="wait"]{border-color:rgba(251,146,60,.6)!important;background:rgba(251,146,60,.08)!important;}
 [data-pg-lib-card] .lc{overflow:hidden;}
 /* 缩略图右下角「共几张」角标 + 卡片内下载按钮/百分比（0.7.39） */
 /* 已下载卡的底色（水蓝），优先于评分色 */
-[data-pg-lib-card][data-pg-dl-done]{border-color:rgba(56,189,248,.62)!important;}
-[data-pg-lib-card][data-pg-dl-done]:hover{border-color:rgba(56,189,248,.9)!important;}
 [data-pg-imgs]{display:flex;flex-direction:column;gap:8px;min-width:0;}
 [data-pg-imgs]>img{max-width:100%;max-height:64vh;object-fit:contain;border-radius:8px;cursor:zoom-in;}
 [data-pg-detailstage]{position:relative;display:flex;align-items:center;justify-content:center;min-height:280px;padding:6px;border:1px solid rgba(148,163,184,.16);border-radius:10px;background:rgba(10,16,24,.45);}
@@ -2145,15 +2577,68 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-batchcount]{font-size:12px;font-weight:600;}
 [data-pg-batchnote]{font-size:11px;opacity:.55;}
 [data-pg-batchgroup]{display:inline-flex;gap:5px;align-items:center;}
+/* 作品库顶栏翻页 + 一键复制；提示用炫彩字（原生 title 做不到彩色） */
+[data-pg-copypage],[data-pg-copyfiles]{position:relative;overflow:visible !important;}
+/* 提示条：底色在外层、彩虹字在内层 <b>（同一层用 background-clip:text 会被自己的底色盖掉） */
+[data-pg-copytip]{position:absolute;left:50%;top:calc(100% + 9px);transform:translateX(-50%);white-space:nowrap;padding:6px 12px;border-radius:9px;font-size:12px;font-weight:800;letter-spacing:.2px;opacity:0;pointer-events:none;transition:opacity .14s ease;z-index:95;background:rgba(10,14,24,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 10px 26px rgba(0,0,0,.42);}
+[data-pg-copytip] > b{display:inline-block;color:transparent;background-image:linear-gradient(92deg,#ff6bd6,#ffd166,#7cf5c3,#7cc4ff,#c9a7ff,#ff6bd6);background-size:280% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:pg-rainbow 6s linear infinite;}
+[data-pg-copypage]:hover,[data-pg-copyfiles]:hover,[data-pg-copypage]:focus-visible,[data-pg-copyfiles]:focus-visible{z-index:75;}
+[data-pg-copypage]:hover [data-pg-copytip],[data-pg-copyfiles]:hover [data-pg-copytip],[data-pg-copypage]:focus-visible [data-pg-copytip],[data-pg-copyfiles]:focus-visible [data-pg-copytip]{opacity:1;}
+[data-pg-libpager]{display:inline-flex;align-items:center;gap:5px;position:relative;z-index:14;}
+/* 浮层（body 上那颗）：炫彩字只给标了 rainbow 的提示用 */
+[data-pg-tipbox] [data-pg-tiprainbow]{display:inline-block;font-weight:800;letter-spacing:.2px;color:transparent;background:linear-gradient(90deg,#ff8ac2,#ffd166,#6ee7ff,#a78bfa,#ff8ac2);background-size:280% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:pg-rainbow 6s linear infinite;}
+[data-pg-filters]{position:relative;z-index:13;}
 /* 已下载：蓝边 + 轻微外发光；神作的金边规则排在后面，优先显示金边 */
-[data-pg-lib-card][data-pg-downloaded]{border-color:rgba(56,189,248,.62);box-shadow:0 0 0 1px rgba(56,189,248,.22),0 6px 18px rgba(8,47,73,.22);}
+[data-pg-lib-card][data-pg-downloaded]{border-color:rgba(30,64,175,.92);box-shadow:0 0 0 1px rgba(30,64,175,.3),0 8px 20px rgba(8,30,73,.3);}
 [data-pg-lib-card][data-pg-partial]{border-color:rgba(245,158,11,.66)!important;box-shadow:0 0 0 1px rgba(245,158,11,.24),0 6px 18px rgba(120,53,15,.24)!important;}
-[data-pg-lib-card][data-pg-partial]:hover{border-color:rgba(251,191,36,.9)!important;}
 [data-pg-spreadlocal]{margin-top:6px;font-size:12px;line-height:17px;font-weight:650;color:#fbbf24;}
 @keyframes pg-dl-land{0%{box-shadow:0 0 0 0 rgba(56,189,248,.55),0 0 0 1px rgba(56,189,248,.45) inset;}60%{box-shadow:0 0 0 8px rgba(56,189,248,0),0 0 0 1px rgba(56,189,248,.25) inset;}100%{box-shadow:0 0 0 0 rgba(56,189,248,0),0 6px 18px rgba(8,47,73,.22);}}
 [data-pg-lib-card][data-pg-dl="done"]{animation:pg-dl-land 1s ease-out 1;}
 [data-pg-lib-card][data-pg-masterpiece]{position:relative;border-color:rgba(240,195,60,.78);box-shadow:0 0 0 1px rgba(240,195,60,.36),0 6px 20px rgba(255,170,0,.18);}
-[data-pg-lib-card][data-pg-masterpiece]::after{content:'';position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(112deg,transparent 40%,rgba(255,236,170,.16) 47%,rgba(255,214,102,.32) 50%,rgba(255,236,170,.16) 53%,transparent 60%);background-size:300% 100%;background-repeat:no-repeat;animation:pg-shine 13s linear infinite;mix-blend-mode:screen;opacity:.75;}
+[data-pg-lib-card][data-pg-masterpiece]{box-shadow:0 0 0 1px rgba(255,214,102,.32),0 0 13px rgba(255,196,60,.24),0 12px 26px -18px rgba(255,170,0,.3);}
+[data-pg-lib-card][data-pg-masterpiece]::before{content:'';position:absolute;inset:-3%;z-index:0;pointer-events:none;background:radial-gradient(circle at 28% 16%,rgba(255,255,255,.24),transparent 40%),radial-gradient(circle at 74% 80%,rgba(255,206,84,.26),transparent 44%),radial-gradient(circle at 52% 52%,rgba(124,196,255,.18),transparent 62%);filter:blur(9px);animation:pg-gem 6.5s ease-in-out infinite;}
+[data-pg-lib-card][data-pg-masterpiece]::after{content:'';position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(112deg,transparent 34%,rgba(255,255,255,.42) 44%,rgba(255,214,102,.62) 50%,rgba(255,255,255,.42) 56%,transparent 66%);background-size:300% 100%;background-repeat:no-repeat;animation:pg-shine 7s linear infinite;mix-blend-mode:screen;opacity:.9;}
+@keyframes pg-gem{0%,100%{opacity:.62;transform:scale(1)}50%{opacity:1;transform:scale(1.07)}}
+/* 10 分且所有标签都在喜爱标签里：边框换成流动的炫彩环。
+   环是卡片里的一层 div（不是 border-image）—— border-image 会吃掉圆角。 */
+[data-pg-lib-card] [data-pg-rainbowring]{display:none;}
+[data-pg-lib-card][data-pg-rainbow]{border-color:transparent !important;background-clip:padding-box;}
+[data-pg-lib-card][data-pg-rainbow]:hover{box-shadow:0 0 0 1px rgba(255,255,255,.24),0 0 20px 2px rgba(255,107,214,.55),0 0 36px 6px rgba(124,196,255,.42),0 16px 30px -16px rgba(2,8,23,.55);}
+[data-pg-lib-card][data-pg-rainbow]::before{background:radial-gradient(circle at 24% 14%,rgba(255,107,214,.36),transparent 42%),radial-gradient(circle at 76% 78%,rgba(124,196,255,.34),transparent 44%),radial-gradient(circle at 52% 52%,rgba(252,245,140,.30),transparent 58%) !important;filter:blur(10px);animation:pg-gem 6.5s ease-in-out infinite;}
+[data-pg-lib-card][data-pg-rainbow]{overflow:visible !important;}
+[data-pg-lib-card][data-pg-rainbow] .lc{border-radius:8px 8px 0 0;overflow:hidden;}
+[data-pg-lib-card][data-pg-rainbow] .lb{border-radius:0 0 10px 10px;}
+[data-pg-lib-card][data-pg-rainbow] [data-pg-rainbowring]{
+  display:block;position:absolute;inset:-3px;z-index:4;pointer-events:none;border-radius:13px;padding:4px;
+  box-shadow:inset 0 0 7px rgba(255,255,255,.22);
+  background:linear-gradient(92deg,#ff6bd6,#ffd166,#7cf5c3,#7cc4ff,#c9a7ff,#ff6bd6);
+  background-size:280% 100%;animation:pg-rainbow 6s linear infinite;
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;}
+[data-pg-theme="light"] [data-pg-lib-card][data-pg-rainbow]{border-color:transparent !important;}
+[data-pg-lib-card][data-pg-rainbow]{box-shadow:0 0 0 1px rgba(255,255,255,.16),0 0 16px rgba(255,107,214,.34),0 0 28px rgba(124,196,255,.28),0 12px 26px -18px rgba(2,8,23,.5) !important;}
+[data-pg-lib-card][data-pg-rainbow]::after{background:linear-gradient(112deg,transparent 34%,rgba(255,255,255,.42) 44%,rgba(255,163,235,.6) 50%,rgba(255,255,255,.42) 56%,transparent 66%) !important;background-size:300% 100% !important;mix-blend-mode:screen;}
+[data-pg-theme="light"] [data-pg-lib-card][data-pg-rainbow]{box-shadow:0 0 0 1px rgba(255,255,255,.6),0 0 14px rgba(236,72,153,.24),0 0 22px rgba(59,130,246,.18),0 10px 22px -16px rgba(15,23,42,.32) !important;}
+@media (prefers-reduced-motion:reduce){[data-pg-lib-card][data-pg-rainbow] [data-pg-rainbowring]{animation:none}}
+/* 顶栏按钮与胶囊自带颜色（深色偏亮） */
+[data-pg-head] [data-pg-btn][data-hue="green"]{background:rgba(16,185,129,.22);border-color:rgba(52,211,153,.58);color:#a7f3d0;}
+[data-pg-head] [data-pg-btn][data-hue="green"]:hover{background:rgba(16,185,129,.36);border-color:rgba(110,231,183,.9);color:#ecfdf5;}
+[data-pg-head] [data-pg-btn][data-hue="amber"]{background:rgba(245,158,11,.22);border-color:rgba(251,191,36,.58);color:#fde68a;}
+[data-pg-head] [data-pg-btn][data-hue="amber"]:hover{background:rgba(245,158,11,.36);border-color:rgba(253,230,138,.9);color:#fffbeb;}
+[data-pg-head] [data-pg-btn][data-hue="blue"]{background:rgba(56,189,248,.22);border-color:rgba(125,211,252,.58);color:#bae6fd;}
+[data-pg-head] [data-pg-btn][data-hue="blue"]:hover{background:rgba(56,189,248,.36);border-color:rgba(186,230,253,.9);color:#f0f9ff;}
+[data-pg-head] [data-pg-tabs]{display:inline-flex;gap:2px;padding:2px;border-radius:10px;background:rgba(127,127,127,.14);}
+[data-pg-head] [data-pg-tab]{border-radius:8px;}
+[data-pg-head] [data-pg-tab][data-on]{background:linear-gradient(180deg,rgba(251,176,72,.96),rgba(234,120,20,.9)) !important;color:#ffffff !important;border:1px solid rgba(253,196,116,.9) !important;box-shadow:0 2px 12px rgba(249,115,22,.38);text-shadow:0 1px 2px rgba(120,53,15,.55);}
+[data-pg-head] [data-pg-strictpill]{background:linear-gradient(180deg,rgba(96,165,250,.36),rgba(59,130,246,.22)) !important;border-color:rgba(147,197,253,.78) !important;box-shadow:0 0 0 1px rgba(96,165,250,.2),0 3px 12px rgba(37,99,235,.3),inset 0 1px 0 rgba(255,255,255,.16);}
+[data-pg-head] [data-pg-strictpill] [data-pg-pillbtn]{color:#dbeafe;font-weight:800;}
+[data-pg-head] [data-pg-freshpill]{background:linear-gradient(180deg,rgba(251,191,36,.36),rgba(245,158,11,.22)) !important;border-color:rgba(253,224,138,.82) !important;box-shadow:0 0 0 1px rgba(251,191,36,.2),0 3px 12px rgba(217,119,6,.28),inset 0 1px 0 rgba(255,255,255,.16);}
+[data-pg-head] [data-pg-freshpill] [data-pg-pillbtn]{color:#fef3c7;font-weight:800;}
+[data-pg-head] [data-pg-swi]{border-color:rgba(52,211,153,.5);background:rgba(6,95,70,.44);}
+[data-pg-head] [data-pg-swi][data-on]{border-color:rgba(110,231,183,.8);background:rgba(5,150,105,.48);}
+
+@keyframes pg-rainbow{0%{background-position:0% 50%}100%{background-position:280% 50%}}
 @keyframes pg-stamp-sweep{0%{background-position:0% 50%;}45%{background-position:100% 50%;}100%{background-position:0% 50%;}}
 @keyframes pg-shine{0%{background-position:172% 0}12%{background-position:-72% 0}100%{background-position:-72% 0}}
 @keyframes pg-stampw{0%,12%{background-position:180% 0}30%{background-position:-80% 0}100%{background-position:-80% 0}}
@@ -2421,7 +2906,7 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-sep]{color:rgba(255,255,255,.45);margin:0 1px;}
 [data-pg-dual="none"]{color:#e5e7eb;font-weight:600;}
 [data-pg-dual][data-compact]{position:static;font-size:11px;padding:1px 6px;background:rgba(127,127,127,.12);color:inherit;}
-[data-pg-main]{height:100%;overflow:auto;padding:14px 16px 90px;}
+[data-pg-main]{height:100%;overflow:auto;overflow-anchor:none;padding:14px 16px 90px;}
 [data-pg-sideicon]{display:flex;flex-direction:column;align-items:center;gap:2px;width:100%;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;padding:5px 0;border-radius:8px;}
 [data-pg-sideicon] span{display:grid;place-items:center;width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#f472b6,#a78bfa);color:#fff;font-size:12px;font-weight:900;box-shadow:0 2px 8px rgba(167,139,250,.35);}
 [data-pg-sideicon]:hover{background:rgba(127,127,127,.10);}
@@ -2476,6 +2961,109 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-buildchip]{font-size:11px;font-weight:600;line-height:1;padding:4px 7px;border-radius:999px;cursor:pointer;color:#0369a1;background:#e0f2fe;border:1px solid #7dd3fc;}
 [data-pg-buildchip]:hover{background:#bae6fd;}
 [data-pg-theme="dark"] [data-pg-buildchip]{color:#bfe9ff;background:rgba(56,189,248,.16);border-color:rgba(56,189,248,.5);}
+/* 画廊检索（顶栏入口）：像聊天一样问用法，粘 pid 就查作品 */
+[data-pg-lookupsheet]{position:fixed;inset:0;z-index:950;display:flex;align-items:center;justify-content:center;background:rgba(6,10,18,.58);backdrop-filter:blur(3px);}
+[data-pg-lkpanel]{width:min(96vw,1080px);height:min(92vh,900px);display:flex;flex-direction:column;border-radius:18px;overflow:hidden;background:#ffffff;color:#0f172a;border:1px solid #cbd5e1;box-shadow:0 28px 80px rgba(2,8,23,.30);}
+[data-pg-theme="dark"] [data-pg-lkpanel]{background:#0b1220;color:#e9eef9;border-color:rgba(148,163,184,.32);}
+[data-pg-lkhead]{display:flex;align-items:center;gap:12px;padding:12px 16px;background:linear-gradient(92deg,#06b6d4,#3b82f6 60%,#8b5cf6);color:#fff;}
+[data-pg-lktitle]{font-size:15px;font-weight:900;letter-spacing:.4px;white-space:nowrap;}
+[data-pg-lktip]{flex:1;min-width:0;font-size:12px;line-height:1.55;opacity:.97;cursor:pointer;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+[data-pg-lktip]:hover{opacity:1;text-decoration:underline;}
+[data-pg-lktagsbar]{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 16px;border-top:1px solid #e2e8f0;background:#f8fafc;font-size:12.5px;}
+[data-pg-theme="dark"] [data-pg-lktagsbar]{background:#0a1424;border-color:rgba(148,163,184,.24);}
+[data-pg-lkchip]{font-size:12px;line-height:1;padding:5px 9px;border-radius:999px;cursor:pointer;color:#0f5132;background:#dcfce7;border:1px solid #86efac;}
+[data-pg-lkchip]:hover{background:#bbf7d0;}
+[data-pg-theme="dark"] [data-pg-lkchip]{color:#d9f99d;background:rgba(34,197,94,.18);border-color:rgba(134,239,172,.45);}
+[data-pg-lkchat]{flex:1;min-height:0;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;background:#f8fafc;}
+[data-pg-theme="dark"] [data-pg-lkchat]{background:#070d18;}
+[data-pg-lkrow]{display:flex;flex-direction:column;gap:6px;max-width:86%;}
+[data-pg-lkrow="me"]{align-self:flex-end;align-items:flex-end;}
+[data-pg-lkrow="ai"]{align-self:flex-start;align-items:flex-start;}
+[data-pg-lkbubble]{padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.78;white-space:pre-wrap;word-break:break-word;}
+[data-pg-lkbubble="me"]{background:#0ea5e9;color:#fff;border-bottom-right-radius:4px;}
+[data-pg-lkbubble="ai"]{background:#ffffff;color:#0f172a;border:1px solid #e2e8f0;border-bottom-left-radius:4px;}
+[data-pg-theme="dark"] [data-pg-lkbubble="ai"]{background:#111c2f;color:#e9eef9;border-color:rgba(148,163,184,.28);}
+[data-pg-lkbubble="bad"]{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
+[data-pg-theme="dark"] [data-pg-lkbubble="bad"]{background:rgba(127,29,29,.42);color:#fecaca;border-color:rgba(248,113,113,.45);}
+[data-pg-lkhello]{font-size:13px;line-height:1.85;color:#334155;background:#ffffff;border:1px dashed #94a3b8;border-radius:12px;padding:12px 14px;}
+[data-pg-theme="dark"] [data-pg-lkhello]{color:#cbd5e1;background:#0e1728;border-color:rgba(148,163,184,.42);}
+[data-pg-lkhelloline]{margin-top:6px;font-size:12.5px;line-height:1.8;color:#475569;}
+[data-pg-theme="dark"] [data-pg-lkhelloline]{color:#a9b8cc;}
+[data-pg-lkimgs]{display:flex;gap:6px;flex-wrap:wrap;}
+[data-pg-lkimgs] img{width:88px;height:88px;object-fit:cover;border-radius:10px;border:1px solid #cbd5e1;cursor:pointer;background:#000;}
+[data-pg-theme="dark"] [data-pg-lkimgs] img{border-color:rgba(148,163,184,.4);}
+[data-pg-lkres]{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;padding:12px 16px;border-top:1px solid #e2e8f0;background:#f1f5f9;}
+[data-pg-lkres] img{background:transparent;padding:0;margin:0;}
+[data-pg-lookupsheet] input[data-pg-in],[data-pg-lookupsheet] select,[data-pg-lookupsheet] textarea{background:#ffffff !important;color:#0f172a !important;border-color:#cbd5e1 !important;}
+[data-pg-lookupsheet] select option{background:#ffffff;color:#0f172a;}
+[data-pg-lookupsheet] input[data-pg-in]::placeholder{color:#94a3b8;}
+[data-pg-lookupsheet][data-pg-theme="dark"] input[data-pg-in],[data-pg-lookupsheet][data-pg-theme="dark"] select,[data-pg-lookupsheet][data-pg-theme="dark"] textarea{background:#111c2f !important;color:#e9eef9 !important;border-color:rgba(148,163,184,.34) !important;}
+[data-pg-lookupsheet][data-pg-theme="dark"] select option{background:#111c2f;color:#e9eef9;}
+[data-pg-lookupsheet][data-pg-theme="dark"] input[data-pg-in]::placeholder{color:#7c8aa0;}
+[data-pg-theme="dark"] [data-pg-lkres]{background:#0a1424;border-color:rgba(148,163,184,.24);}
+[data-pg-lkbig]{flex:0 0 auto;}
+[data-pg-lkbig] img{display:block;max-width:min(54vw,880px);max-height:78vh;width:auto;height:auto;object-fit:contain;border-radius:10px;background:transparent;box-shadow:0 6px 22px rgba(15,23,42,.16);}
+[data-pg-lkbig] img[data-gapfix]{display:block;vertical-align:top;}
+[data-pg-lkinfo]{flex:1 1 300px;min-width:260px;display:flex;flex-direction:column;gap:6px;}
+[data-pg-lkname]{font-size:15px;font-weight:900;line-height:1.5;}
+[data-pg-lkby]{font-size:12.5px;line-height:1.7;color:#475569;}
+[data-pg-lktags]{font-size:12.5px;line-height:1.7;color:#475569;word-break:break-word;}
+[data-pg-theme="dark"] [data-pg-lkby],[data-pg-theme="dark"] [data-pg-lktags]{color:#b8c4d6;}
+[data-pg-lklink]{font-size:12.5px;color:#0369a1;text-decoration:none;}
+[data-pg-theme="dark"] [data-pg-lklink]{color:#7dd3fc;}
+[data-pg-lkacts]{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;}
+[data-pg-lkcheck]{display:flex;gap:6px;align-items:center;font-size:12.5px;color:#334155;}
+[data-pg-theme="dark"] [data-pg-lkcheck]{color:#cfd8e6;}
+[data-pg-lkstrip]{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;}
+[data-pg-lkstrip] img{width:56px;height:56px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid #cbd5e1;opacity:.82;}
+[data-pg-lkstrip] img[data-on]{border:2px solid #06b6d4;opacity:1;}
+[data-pg-lkmsg]{padding:8px 16px;font-size:12.5px;line-height:1.7;color:#0f766e;background:#ecfeff;}
+[data-pg-theme="dark"] [data-pg-lkmsg]{color:#a5f3fc;background:rgba(8,145,178,.20);}
+[data-pg-lkinput]{display:flex;flex-direction:column;gap:8px;padding:10px 16px 12px;border-top:1px solid #e2e8f0;background:#ffffff;}
+[data-pg-theme="dark"] [data-pg-lkinput]{background:#0b1220;border-color:rgba(148,163,184,.24);}
+[data-pg-lkinput] textarea{width:100%;min-height:62px;resize:vertical;font-size:13px;line-height:1.7;background:#ffffff;color:#0f172a;border:1px solid #cbd5e1;border-radius:10px;padding:10px 12px;box-sizing:border-box;}
+[data-pg-lkinput] textarea::placeholder{color:#94a3b8;}
+[data-pg-theme="dark"] [data-pg-lkinput] textarea{background:#111c2f;color:#e9eef9;border-color:rgba(148,163,184,.34);}
+[data-pg-theme="dark"] [data-pg-lkinput] textarea::placeholder{color:#7c8aa0;}
+[data-pg-lkbtns]{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+[data-pg-lkmeta]{font-size:11.5px;color:#64748b;}
+[data-pg-theme="dark"] [data-pg-lkmeta]{color:#93a4b8;}
+/* 画廊检索：深绿胶囊（树叶符号在文案里，不要花环） */
+[data-pg-lookupbtn]{background:radial-gradient(120% 150% at 50% 0%,#2f8a4a 0%,#176b34 46%,#0d4d24 100%);color:#f4fff8;border:1px solid #2f7d4a;font-weight:800;letter-spacing:.3px;text-shadow:0 1px 2px rgba(4,30,14,.55);box-shadow:0 3px 12px rgba(16,80,40,.3);}
+[data-pg-lookupbtn]:hover{filter:brightness(1.1);}
+/* 卡片二级页面的 F 键提示（进入后 5 秒淡出，像绘图工具的工具框） */
+[data-pg-fhud]{position:fixed;left:16px;bottom:16px;z-index:920;display:flex;flex-direction:column;gap:1px;padding:8px 11px;border-radius:11px;background:rgba(8,15,28,.88);border:1px solid rgba(125,211,252,.28);color:#dbeafe;font-size:11.5px;line-height:1.62;box-shadow:0 10px 30px rgba(2,8,23,.38);backdrop-filter:blur(4px);transition:opacity .55s ease;}
+[data-pg-fhud][data-fade]{opacity:0;pointer-events:none;}
+[data-pg-fhud] [data-pg-frow]{display:flex;align-items:center;gap:6px;white-space:nowrap;}
+[data-pg-fhud] [data-pg-fk]{color:#7dd3fc;font-weight:900;font-variant-numeric:tabular-nums;}
+[data-pg-fhud] button{background:none;border:0;padding:0;margin:0;color:#e7f0ff;font:inherit;cursor:pointer;text-align:left;}
+[data-pg-fhud] button:hover{color:#ffffff;text-decoration:underline;}
+[data-pg-fhud] [data-empty]{color:rgba(219,234,254,.45);}
+[data-pg-fhud] [data-busy]{color:rgba(219,234,254,.55);}
+[data-pg-fpick]{position:absolute;left:0;bottom:100%;margin-bottom:6px;min-width:170px;padding:6px;border-radius:10px;background:#0d1726;border:1px solid rgba(125,211,252,.32);box-shadow:0 12px 30px rgba(2,8,23,.45);display:flex;flex-direction:column;gap:2px;z-index:2;}
+[data-pg-fpick]{max-height:min(46vh,300px);overflow-y:auto;overscroll-behavior:contain;}
+[data-pg-fpick] [data-pg-fpicknew]{display:flex;gap:4px;align-items:center;padding:5px 2px 2px;margin-top:3px;border-top:1px solid rgba(148,163,184,.28);}
+[data-pg-fpick] [data-pg-fpicknew] input{flex:1 1 auto;min-width:0;font:inherit;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid rgba(148,163,184,.42);background:rgba(15,23,42,.6);color:#e7f0ff;}
+[data-pg-theme="light"] [data-pg-fpick] [data-pg-fpicknew] input{background:#ffffff;color:#0f172a;border-color:#cbd5e1;}
+[data-pg-fpick] button{padding:5px 8px;border-radius:7px;font-size:12px;}
+[data-pg-fpick] button:hover{background:rgba(56,189,248,.18);text-decoration:none;}
+[data-pg-theme="light"] [data-pg-fhud]{background:rgba(255,255,255,.96);border-color:#bae6fd;color:#0f172a;box-shadow:0 10px 30px rgba(15,23,42,.18);}
+[data-pg-theme="light"] [data-pg-fhud] [data-pg-fk]{color:#0284c7;}
+[data-pg-theme="light"] [data-pg-fhud] button{color:#0f172a;}
+[data-pg-theme="light"] [data-pg-fhud] [data-empty]{color:#94a3b8;}
+[data-pg-theme="light"] [data-pg-fpick]{background:#ffffff;border-color:#bae6fd;}
+[data-pg-theme="light"] [data-pg-fpick] button{color:#0f172a;}
+[data-pg-theme="light"] [data-pg-fpick] button:hover{background:#e0f2fe;}
+/* 主界面 tips 条：主题按钮下面那一条，字要够大、投影要够重 */
+[data-pg-tipbar]{flex-basis:100%;display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding:4px 14px;height:42px;min-height:42px;max-height:42px;box-sizing:border-box;overflow:hidden;border-radius:12px;background:transparent;border:0;box-shadow:0 10px 24px -12px rgba(2,8,23,.78),0 2px 8px -4px rgba(2,8,23,.5);cursor:pointer;}
+[data-pg-tipbar]:hover{box-shadow:0 12px 28px -12px rgba(2,8,23,.88),0 2px 10px -4px rgba(2,8,23,.58);}
+[data-pg-tiptag]{flex:none;font-size:11px;font-weight:800;letter-spacing:.4px;padding:2px 8px;border-radius:999px;color:#052e3b;background:#7dd3fc;}
+[data-pg-tipbar][data-kind="safe"] [data-pg-tiptag]{background:#fca5a5;color:#450a0a;}
+[data-pg-tipbar][data-kind="sp"] [data-pg-tiptag]{background:#fcd34d;color:#422006;}
+[data-pg-tiptext]{flex:1;min-width:0;font-size:13px;line-height:1.32;font-weight:600;letter-spacing:.2px;color:#eaf6ff;text-shadow:0 1px 2px rgba(0,0,0,.5);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;}
+[data-pg-theme="light"] [data-pg-tipbar]{box-shadow:0 10px 22px -12px rgba(15,23,42,.5),0 2px 6px -4px rgba(15,23,42,.28);}
+[data-pg-theme="light"] [data-pg-tiptext]{color:#0f2137;text-shadow:0 1px 1px rgba(255,255,255,.9);}
+[data-pg-theme="light"] [data-pg-tiptag]{color:#06283a;background:#67c6ec;}
 /* 顶栏三件套（预设 / 严格度 / 立马跑一轮）统一规格：同高 30、同圆角、同字号、文字垂直居中 */
 [data-pg-pill]{display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 6px 0 13px;border-radius:999px;background:rgba(127,127,127,.10);line-height:1;vertical-align:middle;border:1px solid rgba(127,127,127,.20);box-sizing:border-box;}
 /* 药丸下拉（0.7.39）：label 与值都是纯文本，行高一致，永远同一基线 */
@@ -2566,7 +3154,7 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-select]:focus-visible{outline:2px solid rgba(96,165,250,.5);outline-offset:1px;}
 /* ---- 卡片与标题（0.7.39） ---- */
 [data-pg-lib-card]{transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease;}
-[data-pg-lib-card]:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(0,0,0,.22);border-color:rgba(168,85,247,.35);}
+[data-pg-lib-card]:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(56,189,248,.14),0 0 22px 2px var(--pg-glow,rgba(56,189,248,.45)),0 14px 28px -14px rgba(2,8,23,.5);}
 [data-pg-card]{transition:transform .12s ease,box-shadow .12s ease;}
 [data-pg-card]:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(0,0,0,.26);}
 [data-pg-section],[data-pg-title]{letter-spacing:.02em;}
@@ -2627,7 +3215,20 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-sidegrp][data-pg-favdrop][data-dropon]{background:rgba(56,189,248,.14);box-shadow:inset 0 0 0 1px rgba(147,197,253,.85),0 0 18px rgba(56,189,248,.35);}
 @keyframes pg-dropfx{0%{opacity:0;transform:translate(-50%,14px) scale(.92);}16%{opacity:1;transform:translate(-50%,0) scale(1);}72%{opacity:1;transform:translate(-50%,-4px) scale(1);}100%{opacity:0;transform:translate(-50%,-22px) scale(.98);}}
 [data-pg-dropfx]{position:fixed;left:50%;bottom:64px;z-index:9999;pointer-events:none;padding:9px 16px;border-radius:999px;font-size:13px;font-weight:800;color:#0b1220;background:linear-gradient(135deg,#7dd3fc,#c4b5fd);box-shadow:0 12px 30px rgba(0,0,0,.5);animation:pg-dropfx 1.7s ease forwards;}
-[data-pg-allfav]{margin-top:4px;font-size:10px;line-height:14px;color:#fcd34d;opacity:.95;}
+[data-pg-allfav]{margin-top:4px;font-size:10.5px;line-height:14px;font-weight:800;background:linear-gradient(92deg,#ff6bd6,#ffd166,#7cf5c3,#7cc4ff,#c9a7ff,#ff6bd6);background-size:280% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:pg-rainbow 6s linear infinite;}
+[data-pg-hitcount][data-hot]{color:#ef4444;font-weight:900;text-shadow:0 0 10px rgba(239,68,68,.5);}
+[data-pg-collitem]{position:relative;padding:7px 10px !important;border-radius:9px;font-size:13.5px !important;font-weight:800 !important;line-height:1.35;letter-spacing:.2px;}
+[data-pg-side] [data-pg-collitem]{min-height:32px;display:flex;align-items:center;gap:4px;}
+[data-pg-side] [data-pg-collitem] span{font-size:13.5px !important;font-weight:800;}
+[data-pg-perfecttip]{display:none;position:absolute;left:100%;top:-6px;margin-left:10px;width:264px;z-index:80;padding:10px 12px;border-radius:10px;background:rgba(9,16,28,.97);border:1px solid rgba(124,196,255,.5);box-shadow:0 20px 44px -18px rgba(0,0,0,.9);pointer-events:none;}
+[data-pg-perfecttipin]{display:block;font-size:11px;line-height:1.6;font-weight:800;background:linear-gradient(92deg,#ff8ae2,#ffd166,#7cf5c3,#7cc4ff,#c9a7ff,#ff8ae2);background-size:280% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;animation:pg-rainbow 6s linear infinite;}
+[data-pg-collitem]:hover [data-pg-perfecttip]{display:block;}
+[data-pg-pinicon]{flex:0 0 auto;margin-right:5px;vertical-align:-1px;}
+[data-pg-pinicon][data-pin="gold"]{color:#f5c542;filter:drop-shadow(0 0 5px rgba(245,197,66,.65));}
+[data-pg-pinicon][data-pin="blue"]{color:#38bdf8;filter:drop-shadow(0 0 5px rgba(56,189,248,.55));}
+[data-pg-collitem][data-pin="gold"]{box-shadow:inset 0 0 0 1px rgba(245,197,66,.34);}
+[data-pg-collitem][data-dragover]{outline:2px dashed rgba(56,189,248,.85);outline-offset:-2px;}
+[data-pg-perfecttipfixed]{position:fixed;z-index:3000;max-width:300px;padding:10px 12px;border-radius:10px;background:rgba(9,16,24,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 18px 40px rgba(0,0,0,.55);pointer-events:none;}
 /* ---- 0.7.40 / 0.7.41 选择收藏夹子页面 ---- */
 [data-pg-collpick]{display:flex;flex-direction:column;padding:16px 18px 0;}
 [data-pg-collpick-head]{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid rgba(127,127,127,.18);}
@@ -2661,7 +3262,8 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-lib-card] [data-pg-scoreline] [data-pg-stamp]{font-size:14.5px;line-height:18px;}
 /* ---- 0.7.45 作者均分 / 标签平铺 / 标签列表重做 ---- */
 [data-pg-authoravg]{display:inline-flex;align-items:center;gap:3px;margin-left:7px;font-size:11.5px;font-weight:800;letter-spacing:.02em;line-height:1;}
-[data-pg-authoravg] i{font-style:normal;color:#fff;text-shadow:0 0 6px rgba(255,255,255,.55);font-size:11px;}
+[data-pg-authoravg] i{font-style:normal;color:#facc15;text-shadow:0 0 7px rgba(250,204,21,.62);font-size:11px;}
+[data-pg-theme="light"] [data-pg-authoravg] i{color:#eab308;text-shadow:0 1px 2px rgba(202,138,4,.4);}
 [data-pg-authoravg][data-tone="warm"]{color:#fbbf24;}
 [data-pg-authoravg][data-tone="hot"]{color:#f43f5e;}
 [data-pg-authoravg][data-tone="cool"]{color:var(--pg-fg2);}
@@ -2697,7 +3299,7 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-sidegrp]{display:flex;flex-direction:column;gap:2px;padding:0 0 8px;}
 [data-pg-side] [data-pg-sidegrp]+[data-pg-sidegrp],[data-pg-collect-side] [data-pg-sidegrp]+[data-pg-sidegrp]{border-top:1px solid rgba(127,127,127,.14);padding-top:8px;}
 [data-pg-sidehead]{font-size:11px;font-weight:800;letter-spacing:.06em;color:rgba(148,163,184,.9);padding:7px 8px 3px;display:flex;justify-content:space-between;align-items:center;gap:6px;}
-[data-pg-sidehead] span{font-weight:600;letter-spacing:0;color:rgba(148,163,184,.65);font-size:10px;}
+[data-pg-sidehead] span:not([data-pg-sideheadtext]):not([data-pg-sidecount]):not([data-pg-fold]){font-weight:600;letter-spacing:0;color:rgba(148,163,184,.65);font-size:10px;}
 [data-pg-side] [data-pg-sidetarget],[data-pg-collect-side] [data-pg-sidetarget]{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-weight:700;}
 [data-pg-sideright]{font-size:11px;font-weight:700;font-variant-numeric:tabular-nums;opacity:.82;flex:0 0 auto;}
 [data-pg-taghead]{display:grid;grid-template-columns:26px minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:center;padding:11px 12px;font-size:13px;font-weight:800;letter-spacing:.03em;color:var(--dsw-alias-label-primary,#e5e7eb);background:rgba(127,127,127,.10);border-bottom:1px solid rgba(127,127,127,.22);border-radius:10px 10px 0 0;}
@@ -2773,7 +3375,11 @@ a[data-pg-tastepill]{text-decoration:none;}
 [data-pg-ugoira-frame]{position:absolute;left:10px;bottom:10px;z-index:4;padding:3px 8px;border-radius:999px;background:rgba(9,12,20,.66);color:#cbd5e1;font-size:10.5px;font-weight:650;font-variant-numeric:tabular-nums;pointer-events:none;}
 [data-pg-lb-load]{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:6;display:flex;align-items:center;justify-content:center;gap:10px;padding:10px 18px;border-radius:999px;background:rgba(9,12,20,.82);color:var(--pg-fg1);font-size:13.5px;font-weight:650;white-space:nowrap;width:max-content;max-width:min(80vw,560px);box-shadow:0 8px 26px rgba(0,0,0,.45);pointer-events:none;}
 [data-pg-lb-load] i{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#93c5fd;display:block;animation:pgspin .8s linear infinite;}
-[data-pg-partial-avg]{font-size:12px;line-height:16px;font-weight:700;color:#cbd5e1;background:rgba(15,23,42,.62);padding:2px 8px;border-radius:7px;border:1px dashed rgba(148,163,184,.4);}
+
+/* 动图/详情加载提示：浅色主题下不能再用深底深字（--pg-fg1 在浅色是 #1b1e26） */
+[data-pg-theme="light"] [data-pg-lb-load],[data-pg-theme="light"] [data-pg-detail-load]{background:rgba(255,255,255,.97);color:#1b1e26;border:1px solid rgba(15,23,42,.14);box-shadow:0 10px 28px rgba(15,23,42,.2);}
+[data-pg-theme="light"] [data-pg-lb-load] i,[data-pg-theme="light"] [data-pg-detail-load] i{border-color:rgba(15,23,42,.2);border-top-color:#2563eb;}
+[data-pg-theme="light"] [data-pg-lb-load] span,[data-pg-theme="light"] [data-pg-detail-load] span{color:#1b1e26;}[data-pg-partial-avg]{font-size:12px;line-height:16px;font-weight:700;color:#cbd5e1;background:rgba(15,23,42,.62);padding:2px 8px;border-radius:7px;border:1px dashed rgba(148,163,184,.4);}
 @keyframes pgspin{to{transform:rotate(360deg)}}
 [data-pg-devnote]{margin-top:auto;padding:10px 8px 6px;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary,#aeb4bd);opacity:.85;border-top:1px dashed rgba(127,127,127,.18);}
 [data-pg-devnote] b{display:inline;font-size:11px;color:var(--pg-fg2);font-weight:700;}
@@ -2984,6 +3590,22 @@ function RoundCover({ roundId, id, title, artist }) {
 
     // 动图播放器：所有帧预解码后用 canvas 直接画，rAF 里不 setState，
     // 避免每帧重渲染整棵 Lightbox，也避免叠一堆 <img> 后浏览器回收解码导致闪烁。
+    /* 动图整段播放：服务端已合成循环 webp，一次请求就出画面，比逐帧拉快得多 */
+    function UgoiraAnimImg({ src, zoom }) {
+      return h('div', { 'data-pg-ugocanvas': '' },
+        h('img', {
+          src, alt: '', draggable: false, 'data-pg-ugoira-anim': '', 'aria-label': '动图正在播放',
+          style: {
+            maxWidth: '94vw', maxHeight: '80vh', borderRadius: '6px',
+            boxShadow: '0 18px 60px rgba(0,0,0,.6)',
+            transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})`,
+            transformOrigin: 'center center',
+            transition: 'transform .12s ease-out',
+            imageRendering: 'auto',
+          },
+        }))
+    }
+
     function UgoiraCanvas({ frames, images, zoom, ready }) {
       const canvasRef = React.useRef(null)
       const labelRef = React.useRef(null)
@@ -3051,6 +3673,7 @@ function RoundCover({ roundId, id, title, artist }) {
       const [phase, setPhase] = React.useState(src ? 'loading' : 'empty')
       const [frames, setFrames] = React.useState(null) // 动图：[{u,delay}]
       const [ugoiraFailed, setUgoiraFailed] = React.useState(false)
+      const [animUrl, setAnimUrl] = React.useState('')
       const [pageText, setPageText] = React.useState('1')
       const [loadedSrc, setLoadedSrc] = React.useState('')
       const [lbLoad, setLbLoad] = React.useState({ done: 0, total: 0 })
@@ -3174,6 +3797,7 @@ function RoundCover({ roundId, id, title, artist }) {
         let alive = true
         setFrames(null)
         setUgoiraFailed(false)
+        setAnimUrl('')
         frameIdxRef.current = 0
         preloadRef.current = []
         if (!ugoiraId) return () => { alive = false }
@@ -3182,6 +3806,16 @@ function RoundCover({ roundId, id, title, artist }) {
             if (!alive) return
             if (!r?.ok || !Array.isArray(r.frames) || r.frames.length < 2) { setUgoiraFailed(true); return }
             const list = r.frames.map((f) => ({ u: BASE + f.u, delay: Math.max(40, Number(f.delay) || 80) }))
+            /* 服务端已经合成过整段循环 webp：一个请求就能播，不必再逐帧拉 */
+            if (r.anim) {
+              setFrames(list)
+              setAnimUrl(BASE + r.anim)
+              setLbLoad({ done: list.length, total: list.length })
+              setPhase('ready')
+              return
+            }
+            /* 还没有整段文件：先按帧播，同时在后台让它合成，下次点开就是一个请求 */
+            try { fetch(BASE + '/ugoira-anim?build=1&id=' + enc(ugoiraId), { credentials: 'same-origin' }).catch(() => {}) } catch { /* ignore */ }
             // 先把每一帧都下载并解码进内存：播放时只切 opacity，不再逐帧换 <img> 重新解码（否则会抽帧）
             setLbLoad({ done: 0, total: list.length })
             let doneN = 0
@@ -3256,7 +3890,7 @@ function RoundCover({ roundId, id, title, artist }) {
       const staticReady = !staticSrc || loadedSrc === staticSrc
       // 动图从点开的第一帧就提示，直到所有帧解码完、真正开始播放才收起
       const ugoiraReady = Boolean(isUgoira && lbLoad.total && lbLoad.done >= lbLoad.total)
-      const ugoiraBusy = Boolean(ugoiraId) && !ugoiraFailed && !ugoiraReady
+      const ugoiraBusy = Boolean(ugoiraId) && !ugoiraFailed && !ugoiraReady && !animUrl
       const staticLoading = Boolean(shown) && !isUgoira && !staticReady && phase !== 'error' && !(ugoiraId && !ugoiraFailed)
       const staticSlow = useDelayedFlag(staticLoading, 1000)
       const goToPage = (n) => requestPage(n)
@@ -3279,7 +3913,7 @@ function RoundCover({ roundId, id, title, artist }) {
         : (title || '')
 
       const meta = [artist, hint].filter(Boolean).join(' · ')
-      return h('div', { 'data-pg-lightbox': '', onClick: (e) => { e.stopPropagation(); onClose() } },
+      return h('div', { 'data-pg-lightbox': '', 'data-pg-theme': PG_THEME, onClick: (e) => { e.stopPropagation(); onClose() } },
         (label || meta) ? h('div', { 'data-pg-lb-head': '' },
           label ? h('div', { 'data-pg-lb-title': '' }, label) : null,
           meta ? h('div', { 'data-pg-lb-sub': '' }, meta) : null) : null,
@@ -3309,8 +3943,10 @@ function RoundCover({ roundId, id, title, artist }) {
             ? h('div', { 'data-pg-lb-load': '', 'data-pg-lb-staticload': '' }, h('i', {}, ''),
               h('span', {}, pageCount > 1 ? `正在加载第 ${(Number(index) || 0) + 1} / ${pageCount} 张…` : '正在加载图片…'))
             : null,
-          isUgoira
-            ? h(UgoiraCanvas, { frames, images: preloadRef.current, zoom, ready: ugoiraReady })
+          animUrl
+            ? h(UgoiraAnimImg, { src: animUrl, zoom })
+            : isUgoira
+              ? h(UgoiraCanvas, { frames, images: preloadRef.current, zoom, ready: ugoiraReady })
             : (shown ? h('img', {
               key: staticSrc,
               src: staticSrc,
@@ -3476,6 +4112,8 @@ function RoundCover({ roundId, id, title, artist }) {
 
     function RoundDetail({ round, onClose, onChanged, say, onOpenLibrary, autoCachePages = 20, onSwitchRound = null }) {
       const [d, setD] = React.useState(null)
+      const detailRootRef = React.useRef(null)   // 卡片二级页的根：加载中禁 Tab、加载完落焦到第一件作品
+      const firstFocusDone = React.useRef(false)
       const [busy, setBusy] = React.useState('')
       const [picked, setPicked] = React.useState(() => new Set())
       const [folderMenu, setFolderMenu] = React.useState(false)
@@ -3523,11 +4161,110 @@ function RoundCover({ roundId, id, title, artist }) {
             const live = (r.round.items || []).filter((x) => x.status !== 'dropped')
             wasCompleteOnce.current = live.length > 0 && live.every((x) => x.userScore !== null && x.userScore !== undefined)
           }
-          if (alive.current) { setD(r.round); setRules(r.rules || null); setScoring(r.scoring || null) }
+          if (alive.current) { setD(r.round); setRules(r.rules || null); setScoring({ enabled: true, ...(r.scoring || {}) }) }
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }, [round])
 
       React.useEffect(() => { alive.current = true; load(); return () => { alive.current = false } }, [load])
+
+      /* 换一张卡片：回到「读取中」，自动落焦也重来一次 */
+      React.useEffect(() => { firstFocusDone.current = false; setD(null) }, [round])
+      /* 卡片还在读的时候把 Tab 关掉：这时面板里只有一句「读取中…」，
+         不拦的话焦点会一路跑到宿主聊天框那些按钮上，读完了还得自己挪回来。 */
+      React.useEffect(() => {
+        if (d) return undefined
+        const onKey = (e) => {
+          if (e.key !== 'Tab') return
+          e.preventDefault()
+          e.stopImmediatePropagation()
+        }
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
+      }, [d])
+      /* 读完自动把焦点放到第一件作品上（只做一次，后面重载不抢焦点） */
+      React.useEffect(() => {
+        if (!d || firstFocusDone.current) return undefined
+        firstFocusDone.current = true
+        let raf2 = 0
+        const tick = () => {
+          const root = detailRootRef.current
+          if (!root) return
+          const first = root.querySelector('[data-pg-work]')
+          if (!first) return
+          try { first.focus({ preventScroll: true }) } catch { /* ignore */ }
+        }
+        const raf1 = window.requestAnimationFrame(() => {
+          tick()
+          raf2 = window.requestAnimationFrame(tick)
+        })
+        return () => { window.cancelAnimationFrame(raf1); window.cancelAnimationFrame(raf2) }
+      }, [d])
+
+      /* 二级界面里按 F1–F9：直接收进绑了那个键的收藏夹（同时进作品库）。
+         这段必须放在 load 定义之后 —— 依赖数组里引用还没初始化的 const 会直接白屏（TDZ）。 */
+      const [colKeys, setColKeys] = React.useState({})
+      const [libCols, setLibCols] = React.useState([])
+      React.useEffect(() => {
+        let stop = false
+        api('/library').then((r) => {
+          if (stop) return
+          const map = {}
+          const raw = (r && r.collections) || []
+          for (const c of raw) {
+            const k = String((c && c.key) || '').toUpperCase()
+            if (/^F[1-9]$/.test(k) && !map[k]) map[k] = String(c.name || c.display || '')
+          }
+          setColKeys(map)
+          setLibCols(raw.filter((c) => c && c.name))
+        }).catch(() => { /* 没收藏夹就不响应 F 键 */ })
+        return () => { stop = true }
+      }, [])
+      /* F 键提示框：只在作品的二级页（灯箱 / 大图）出现，5 秒后淡出；点名字可改绑。
+         必须写在下面 `if (!d) return` 之前 —— 钩子放到提前 return 之后会触发 React #310（hook 数量变化）。 */
+      const [hudOn, setHudOn] = React.useState(false)
+      const [hudFade, setHudFade] = React.useState(false)
+      const [fPick, setFPick] = React.useState('')
+      const [fNew, setFNew] = React.useState('')
+      const hudTimer = React.useRef(0)
+      const flashHud = React.useCallback(() => {
+        setHudFade(false)
+        setHudOn(true)
+        if (hudTimer.current) clearTimeout(hudTimer.current)
+        hudTimer.current = setTimeout(() => {
+          setHudFade(true)
+          hudTimer.current = setTimeout(() => setHudOn(false), 700)
+        }, 5000)
+      }, [])
+      React.useEffect(() => () => { if (hudTimer.current) clearTimeout(hudTimer.current) }, [])
+      /* 只在「从卡片一级页打开二级页」的那一次弹一下：切作品不重弹、也不续命 */
+      const hudWasOpen = React.useRef(false)
+      React.useEffect(() => {
+        const open = !!(light && light.id)
+        if (open && !hudWasOpen.current) flashHud()
+        if (!open) { if (hudTimer.current) clearTimeout(hudTimer.current); setHudOn(false); setHudFade(false) }
+        hudWasOpen.current = open
+      }, [light ? 1 : 0, flashHud])
+      React.useEffect(() => {
+        if (!light || !light.id) return undefined
+        const onKey = (e) => {
+          const k = String(e.key || '')
+          if (!/^F[1-9]$/.test(k)) return
+          e.preventDefault(); e.stopPropagation()
+          const name = colKeys[k]
+          if (!name) {
+            if (typeof say === 'function') say(`${k} 还没绑收藏夹 · 到「设置 → 画廊检索」里绑一下`, 'warn', 5200)
+            return
+          }
+          api('/work/quick-collect', { ids: [String(light.id)], collection: name })
+            .then((rr) => {
+              if (typeof say === 'function') say(`已收进「${name}」，也加进作品库了（${(rr && rr.saved) || 0} 件）`, 'good', 4200)
+              load()
+            })
+            .catch((err) => { if (typeof say === 'function') say('收录失败：' + String(err && err.message || err), 'warn', 6000) })
+        }
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
+      }, [light, colKeys, load, say])
       /* F5：作品库页也能软刷新（以前只有主页登记了，在这页按 F5 等于没反应） */
       React.useEffect(() => pgAddSoftRefresh(() => load()), [load])
 
@@ -3776,7 +4513,7 @@ function RoundCover({ roundId, id, title, artist }) {
       }
 
       if (!d) {
-        return h('div', { 'data-pg-modal': '', onClick: (e) => { e.stopPropagation(); onClose?.() } },
+        return h('div', { 'data-pg-modal': '', ref: detailRootRef, tabIndex: -1, onClick: (e) => { e.stopPropagation(); onClose?.() } },
           h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation(), style: { padding: '40px' } }, Empty({ text: '读取中…' })))
       }
 
@@ -3848,9 +4585,88 @@ function RoundCover({ roundId, id, title, artist }) {
       const lightIdx = light ? queueItems.findIndex((x) => String(x.id) === String(light.id)) : -1
       const lightPrev = lightIdx > 0 ? queueItems[lightIdx - 1] : null
       const lightNext = lightIdx >= 0 && lightIdx < queueItems.length - 1 ? queueItems[lightIdx + 1] : null
+      const createF = async (k) => {
+        const nm = String(fNew || '').trim()
+        if (!nm) return
+        try {
+          await api('/collection/create', { name: nm })
+          setFNew('')
+          await rebindF(k, nm)
+          if (typeof say === 'function') say('收藏夹「' + nm + '」建好了，' + k + ' 也绑上了', 'good', 4200)
+        } catch (e) {
+          if (typeof say === 'function') say('没建成：' + String((e && e.message) || e), 'warn', 5200)
+        }
+      }
+      const rebindF = async (k, name) => {
+        setFPick('')
+        try {
+          await api('/collections/keys', { name, key: name ? k : '' })
+          const r = await api('/library')
+          const map = {}
+          const raw = (r && r.collections) || []
+          for (const c of raw) {
+            const kk = String((c && c.key) || '').toUpperCase()
+            if (/^F[1-9]$/.test(kk) && !map[kk]) map[kk] = String(c.name || c.display || '')
+          }
+          setColKeys(map)
+          setLibCols(raw.filter((c) => c && c.name))
+          if (typeof say === 'function') say(name ? (k + ' 已绑到「' + String(name).slice(0, 6) + '」') : (k + ' 已解绑'), 'good', 3600)
+        } catch (e) {
+          if (typeof say === 'function') say('没绑上：' + String((e && e.message) || e), 'warn', 5200)
+        }
+      }
+
+      const fhudEl = () => {
+        if (!hudOn) return null
+        return h('div', {
+          'data-pg-fhud': '', 'data-fade': hudFade ? '' : undefined,
+          onClick: (e) => e.stopPropagation(),
+          /* 只有鼠标/手指落在提示框自己身上才续命；在画面上切作品不再重置计时 */
+          onMouseMove: (e) => { e.stopPropagation(); if (hudOn) flashHud() },
+          onPointerDown: (e) => { e.stopPropagation(); if (hudOn) flashHud() },
+        }, ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9'].map((k) => {
+          const isBusy = k === 'F5'
+          const nm = String(colKeys[k] || '')
+          return h('div', { key: 'fh' + k, 'data-pg-frow': '', style: { position: 'relative' } },
+            h('b', { 'data-pg-fk': '' }, k),
+            h('span', { 'data-pg-fdot': '' }, '·'),
+            isBusy
+              ? h('span', { 'data-busy': '' }, '刷新（全局占用）')
+              : h('button', {
+                type: 'button',
+                'data-empty': nm ? undefined : '',
+                title: nm ? ('改绑 ' + k) : ('给 ' + k + ' 选一个收藏夹'),
+                onClick: () => setFPick((v) => (v === k ? '' : k)),
+              }, nm ? Array.from(nm).slice(0, 3).join('') : '[空]'),
+            (!isBusy && fPick === k)
+              ? h('div', { 'data-pg-fpick': '' },
+                libCols.slice(0, 12).map((c) => h('button', {
+                  key: 'fp' + c.name, type: 'button',
+                  onClick: () => rebindF(k, String(c.name)),
+                }, String(c.display || c.name) + ' · ' + (c.count || 0))),
+                libCols.length === 0 ? h('button', { type: 'button', disabled: true }, '还没有收藏夹') : null,
+                h('div', { 'data-pg-fpicknew': '' },
+                  h('input', {
+                    'data-pg-in': '', value: fNew, placeholder: '新建文件夹…',
+                    onChange: (e) => setFNew(e.target.value),
+                    onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); createF(k) } },
+                  }),
+                  h('button', { type: 'button', disabled: !String(fNew || '').trim(), onClick: () => createF(k) }, '建')),
+                nm ? h('button', { type: 'button', onClick: () => rebindF(k, '') }, '解绑') : null,
+                h('button', { type: 'button', onClick: () => setFPick('') }, '取消'))
+              : null)
+        }))
+      }
+
       const lightItem = light ? (d.items || []).find((x) => x.id === light.id) : null
 
-      return h('div', { 'data-pg-modal': '', onClick: (e) => { e.stopPropagation(); closeWithReport() } },
+      return h('div', {
+        'data-pg-modal': '',
+        ref: detailRootRef,
+        tabIndex: -1,
+        onClick: (e) => { e.stopPropagation(); closeWithReport() },
+      },
+        fhudEl(),
         h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation() },
           h('div', { 'data-pg-banner': '' },
             header ? h('img', { src: `${BASE}/thumb?round=${enc(round)}&id=${enc(header.id)}`, alt: '' }) : null,
@@ -3902,7 +4718,7 @@ function RoundCover({ roundId, id, title, artist }) {
                   h('div', { 'data-pg-sub': '' }, '到设置「口味调整」里打开后才能给轮次打分'))
                 : h('div', { className: 'box' },
                   h('div', { 'data-pg-note': '' }, '每个作品单独打分'),
-                  h('div', { 'data-pg-sub': '' }, `已评分 ${doneN} / ${liveItems.length} 件；在下面每张作品底下选分`))),
+                  h('div', { 'data-pg-sub': '' }, `已评分 ${doneN} / ${liveItems.length} 件；在下面每张作品底下选分，或点开大图按 0–9（- 顶 10 分）`))),
               h('div', { className: 'box' },
                 h('div', { 'data-pg-note': '' }, '头图'),
                 h('div', { 'data-pg-sub': '' }, header ? `${header.title} · ${header.artist}` : '未选（默认非 R18 萝莉）')),
@@ -4027,7 +4843,7 @@ function RoundCover({ roundId, id, title, artist }) {
           sourceUrl: lightItem?.url || `https://www.pixiv.net/artworks/${light.id}`,
           authorUrl: authorUrl({ artistId: lightItem?.artistId || light.artistId }),
           onToggleAi: lightItem ? () => markAi(lightItem) : null,
-          onScore: scoring?.enabled ? (v) => scoreWork(light.id, v) : null,
+          onScore: (v) => scoreWork(light.id, v),
           index: light.page, total: light.total, cap: light.cap, noFull: true,
           onClose: closeLight,
           onGo: (n) => setLight((v) => v ? { ...v, page: Math.max(0, Math.min(v.total - 1, n - 1)) } : v),
@@ -4347,7 +5163,7 @@ function RoundCover({ roundId, id, title, artist }) {
           !autoTag ? h('div', { 'data-pg-note': '', style: { padding: '2px 8px' } }, '自动同步已关（去设置打开）') : null),
         h('div', { 'data-pg-lib-main': '' },
           h('div', { 'data-pg-filters': '' },
-            h('input', { 'data-pg-input': '', placeholder: '搜标题 / 画师 / 标签…', value: q, onChange: (e) => setQ(e.target.value), style: { flex: '1', minWidth: '180px' } }),
+            h('input', { 'data-pg-input': '', placeholder: '搜标题 / 画师 / 标签 / pid…', value: q, onChange: (e) => setQ(e.target.value), style: { flex: '1', minWidth: '180px' } }),
             h('span', { 'data-pg-note': '' }, `${works.length} / ${lib?.total ?? 0} 件`),
             h('button', { 'data-pg-btn': '', onClick: load }, '刷新')),
           lib === null ? Empty({ text: '读取作品库…' })
@@ -4356,8 +5172,10 @@ function RoundCover({ roundId, id, title, artist }) {
               'data-pg-lib-card': '',
               tabIndex: 0, role: 'button', 'aria-label': w.title || w.name,
               'data-pg-masterpiece': isMasterpiece(w.userScore) ? '' : undefined,
+              'data-pg-rainbow': (isMasterpiece(w.userScore) && pgTagsAllLoved(w, lib)) ? '' : undefined,
               onClick: () => setSel(w),
             },
+            h('div', { 'data-pg-rainbowring': '' }),
             h('div', { className: 'lc' },
               w.cover ? h('img', { src: `${BASE}/lib-cover?name=${enc(w.name)}`, loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
               h(CardMarks, { work: w })),
@@ -5112,6 +5930,17 @@ function RoundCover({ roundId, id, title, artist }) {
     }
 
     /* F5 软刷新注册表：主页、作品库各自登记自己的刷新函数，谁也别覆盖谁 */
+/* R-18 分级提示：一天只弹一次（按本机日期，过零点自动重置），当天弹过就直接跑 */
+function pgToday() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function pgGateSeenToday() {
+  try { return localStorage.getItem('pixiv-gallery.r18gate') === pgToday() } catch { return false }
+}
+function pgMarkGateSeen() {
+  try { localStorage.setItem('pixiv-gallery.r18gate', pgToday()) } catch { /* 存不下就每次问一遍 */ }
+}
 function pgAddSoftRefresh(fn) {
   const cur = Array.isArray(window.__pgSoftRefresh)
     ? window.__pgSoftRefresh
@@ -5126,6 +5955,16 @@ function pgAddSoftRefresh(fn) {
   }
 }
 
+const PERFECT_COLLECTION = '藏赏两宜，无可挑剔'
+const glowOf = (s) => {
+  const n = Number(s)
+  if (!Number.isFinite(n)) return 'rgba(148,163,184,.5)'
+  if (n >= 10) return 'rgba(250,204,21,.8)'
+  if (n >= 9) return 'rgba(244,114,182,.72)'
+  if (n >= 8) return 'rgba(56,189,248,.72)'
+  if (n >= 6) return 'rgba(52,211,153,.66)'
+  return 'rgba(148,163,184,.5)'
+}
 function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
   const normTagKey = (t) => String(t || '').toLowerCase().replace(/[\s_\-（）()]/g, '')
       const [lib, setLib] = React.useState(null)
@@ -5139,6 +5978,33 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       // 「全部评分」没有可比较的评分档位，选它时「评分从低到高」不参与排序
       React.useEffect(() => { if (!scoreFilter && sort === 'score-asc') setSort('score-desc') }, [scoreFilter, sort])
       const [libPage, setLibPage] = React.useState(1)
+  // 纯图模式：只留封面，一页 30 张（主人 2026-11-20 要）
+  const [pure, setPure] = React.useState(() => { try { return localStorage.getItem('pixiv-gallery.pure') === '1' } catch { return false } })
+  const [sideFold, setSideFold] = React.useState(() => { try { return JSON.parse(localStorage.getItem('pixiv-gallery.sidefold') || '{}') || {} } catch { return {} } })
+  const toggleFold = (k) => setSideFold((old) => { const next = { ...(old || {}), [k]: !(old || {})[k] }; try { localStorage.setItem('pixiv-gallery.sidefold', JSON.stringify(next)) } catch { /* ignore */ } return next })
+  const pageSize = pure ? 30 : 20
+  React.useEffect(() => { try { localStorage.setItem('pixiv-gallery.pure', pure ? '1' : '0') } catch { /* ignore */ } }, [pure])
+      const [pageCopyBusy, setPageCopyBusy] = React.useState(false)
+      const [pagePackBusy, setPagePackBusy] = React.useState(false)
+      const [pageFileBusy, setPageFileBusy] = React.useState(false)
+      // 换收藏夹或换标签时自动抹掉搜索 / 筛选 / 页码，免得点进去一片空白
+      React.useEffect(() => { setQ(''); setFilter('all'); setScoreFilter(''); setLibPage(1) }, [kind, name])
+        /* 动图补齐：作品库里已收集的动图，把整段循环 webp 落进作品目录（后台慢慢补，不打断浏览） */
+        React.useEffect(() => {
+          if (kind !== 'all') return undefined
+          let alive = true
+          let timer = 0
+          const step = async () => {
+            if (!alive) return
+            let r = null
+            try { r = await api('/ugoira/backfill', { limit: 3 }) } catch { r = null }
+            if (!alive) return
+            if (r && r.ok && !r.busy && Number(r.remaining) > 0) { timer = window.setTimeout(step, 1200); return }
+          }
+          timer = window.setTimeout(step, 900)
+          return () => { alive = false; try { window.clearTimeout(timer) } catch { /* ignore */ } }
+        }, [kind])
+
       const [sel, setSel] = React.useState(null)
       const [busy, setBusy] = React.useState('')
       const [menu, setMenu] = React.useState(null)
@@ -5297,7 +6163,11 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       }).filter((w) => {
         const s = q.trim().toLowerCase()
         if (!s) return true
-        return [w.title, w.artist, w.name, ...(w.tags || []), ...(w.virtualTags || [])].join(' ').toLowerCase().includes(s)
+        if (/^\d{3,12}$/.test(s)) {
+          const pid = String(w.id || '')
+          if (pid && (pid === s || pid.includes(s))) return true
+        }
+        return [w.id, w.title, w.artist, w.name, ...(w.tags || []), ...(w.virtualTags || [])].join(' ').toLowerCase().includes(s)
       }).filter((w) => {
         if (filter === 'downloaded') return !!w.downloaded
         if (filter === 'virtual') return !w.downloaded
@@ -5328,13 +6198,12 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         if (sort === 'score-asc') return (a.userScore ?? -1) - (b.userScore ?? -1)
         return (b.userScore ?? -1) - (a.userScore ?? -1)
       })
-      const libPages = Math.max(1, Math.ceil(works.length / 20))
+      const libPages = Math.max(1, Math.ceil(works.length / pageSize))
       const libPg = Math.min(libPage, libPages)
-      const pageWorks = works.slice((libPg - 1) * 20, libPg * 20)
-      const goLibPage = (n) => {
-        setLibPage(n)
-        window.setTimeout(() => { try { document.querySelector('[data-pg-lib-grid]')?.scrollIntoView({ block: 'start', behavior: 'smooth' }) } catch { /* ignore */ } }, 40)
-      }
+      const pageWorks = works.slice((libPg - 1) * pageSize, libPg * pageSize)
+      /* 顶栏那组翻页按钮不碰滚动位置；底部翻页一律直接回到最上方 */
+      const goLibPage = (n) => { setLibPage(n) }
+      const goLibPageTop = (n) => { setLibPage(n); window.setTimeout(pgScrollMainToTop, 40) }
       React.useEffect(() => { setLibPage(1) }, [name, kind, q, filter, sort, scoreFilter])
       /* ---- 0.7.58 长按信息栏拖动：卡间排序 / 拖进收藏夹 / 拖到喜爱标签区 ---- */
       const titleOfName = (n) => {
@@ -5588,6 +6457,107 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         e.preventDefault(); e.stopPropagation()
         setMenu({ type, name: n, x: Math.min(e.clientX, window.innerWidth - 240), y: Math.min(e.clientY, window.innerHeight - 280) })
       }
+      const [pinOver, setPinOver] = React.useState('')
+      /* 收藏夹换位（主人 2026-11-20）：长按选中再拖，只在同一档里换。
+         档位：system（「藏赏两宜」，金针、不许动）／gold（优先置顶，金针）／blue（普通置顶）／plain（未置顶）。 */
+      const tierOf = (c) => (c.name === PERFECT_COLLECTION ? 'system' : (c.pin ? (c.gold ? 'gold' : 'blue') : 'plain'))
+      const [collDrag, setCollDrag] = React.useState(null)
+      const collDragRef = React.useRef(null)
+      collDragRef.current = collDrag
+      const collPress = React.useRef(null)
+      const collSkipClick = React.useRef(false)
+      const cancelCollPress = () => { if (collPress.current) window.clearTimeout(collPress.current.timer); collPress.current = null }
+      const beginCollPress = (e, c) => {
+        if (e.button !== undefined && e.button !== 0) return
+        if (tierOf(c) === 'system') return
+        cancelCollPress()
+        const p = { x: e.clientX, y: e.clientY, timer: 0 }
+        p.timer = window.setTimeout(() => {
+          collSkipClick.current = true
+          setCollDrag({ name: c.name, tier: tierOf(c), over: '' })
+        }, 180)
+        collPress.current = p
+      }
+      const collMovePress = (e) => {
+        const p = collPress.current
+        if (!p) return
+        if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 8) cancelCollPress()
+      }
+      const takeCollSkip = () => { const v = collSkipClick.current; collSkipClick.current = false; return v }
+      const swapColl = async (a, b) => {
+        const list = lib?.collections || []
+        const A = list.find((c) => c.name === a)
+        const B = list.find((c) => c.name === b)
+        if (!A || !B) return
+        const ta = tierOf(A)
+        const tb = tierOf(B)
+        if (ta === 'system' || tb === 'system') { say('「' + PERFECT_COLLECTION + '」是固定置顶，不能动', 'warn'); return }
+        if (ta !== tb) {
+          say(ta === 'plain' || tb === 'plain'
+            ? '未置顶的收藏夹不跟置顶换位：先右键置顶（或优先置顶）再拖'
+            : '优先置顶（金针）只能和优先置顶换位，普通置顶只能和普通置顶换位', 'warn', 6000)
+          return
+        }
+        try {
+          if (ta === 'plain') {
+            const names = list.filter((c) => tierOf(c) === 'plain').map((c) => c.name)
+            const i = names.indexOf(a)
+            const j = names.indexOf(b)
+            if (i < 0 || j < 0) return
+            names[i] = b
+            names[j] = a
+            await api('/collection/order', { names })
+          } else {
+            await api('/collection/swap', { a, b })
+          }
+          say('已换位：' + (A.display || A.name) + ' ⇄ ' + (B.display || B.name), 'good')
+          await load()
+        } catch (e) { say(String(e?.message ?? e), 'warn') }
+      }
+      React.useEffect(() => {
+        if (!collDrag) return
+        const onMove = (e) => {
+          const el = document.elementFromPoint(e.clientX, e.clientY)
+          const item = el && el.closest ? el.closest('[data-pg-collitem]') : null
+          const over = item ? String(item.getAttribute('data-pg-collname') || '') : ''
+          setCollDrag((d) => (d && d.over !== over ? { ...d, over } : d))
+        }
+        const finish = () => {
+          const d = collDragRef.current
+          setCollDrag(null)
+          if (d && d.over && d.over !== d.name) swapColl(d.name, d.over)
+        }
+        window.addEventListener('pointermove', onMove, true)
+        window.addEventListener('pointerup', finish, true)
+        window.addEventListener('pointercancel', finish, true)
+        return () => {
+          window.removeEventListener('pointermove', onMove, true)
+          window.removeEventListener('pointerup', finish, true)
+          window.removeEventListener('pointercancel', finish, true)
+        }
+      }, [collDrag ? collDrag.name : ''])
+      const togglePin = async (cname, on, gold) => {
+        try {
+          await api('/collection/pin', { name: cname, pin: on, gold: !!gold })
+          say((on ? (gold ? '已优先置顶（金针）：' : '已置顶：') : '已取消置顶：') + cname, 'good')
+          await load()
+        } catch (e) { say(String(e?.message ?? e), 'warn') }
+      }
+      const dropPin = async (e, target) => {
+        e.preventDefault(); e.stopPropagation()
+        setPinOver('')
+        const src = String((e.dataTransfer && e.dataTransfer.getData('text/pg-coll')) || '')
+        if (!src || src === target.name) return
+        const pinned = (lib?.collections || []).filter((c) => c.pin && c.name !== PERFECT_COLLECTION).map((c) => c.name)
+        const from = pinned.indexOf(src)
+        const to = pinned.indexOf(target.name)
+        if (from < 0 || to < 0) { say('未置顶的收藏夹不能占置顶位；先右键置顶再拖', 'warn', 6000); return }
+        pinned.splice(to, 0, pinned.splice(from, 1)[0])
+        try {
+          await api('/collection/pin-order', { names: [PERFECT_COLLECTION, ...pinned] })
+          await load()
+        } catch (err) { say(String(err?.message ?? err), 'warn') }
+      }
       const folderAction = async (act) => {
         const m = menu
         if (!m) return
@@ -5632,7 +6602,11 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             if (kind === m.type && name === m.name) setName(next)
             say('已改名', 'good'); await load()
           } else if (act === 'delete') {
-            if (!await askConfirm(`删除「${label}」？\n${m.type === 'collection' ? '只会删这份收藏清单，不会删原图。' : '只会删这个虚拟分类，不会删原图。'}`)) return
+            const pinCur = m.type === 'collection' ? (lib?.collections || []).find((c) => c.name === m.name) : null
+            if (pinCur && pinCur.pin) {
+              if (!await askConfirm(`「${label}」是置顶（小针）的收藏夹，再确认一次。\n删掉的只是这份收藏清单，原图不会动。`)) return
+              if (!await askConfirm(`真的要删除「${label}」吗？\n这是最后一次确认，删掉之后要重新建一份。`)) return
+            } else if (!await askConfirm(`删除「${label}」？\n${m.type === 'collection' ? '只会删这份收藏清单，不会删原图。' : '只会删这个虚拟分类，不会删原图。'}`)) return
             if (m.type === 'collection') await api('/collection/delete', { name: m.name })
             else await api('/tag/delete', { name: m.name })
             if (kind === m.type && name === m.name) { setKind('all'); setName('') }
@@ -5784,6 +6758,91 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         if (!(lib?.collections || []).filter((c) => !c.system).length) return say('先在左侧新建一个收藏', 'warn')
         setBatchColl(true)
       }
+      /* 一件作品「最能代表它」的一张图：有原图就原图，没下载就用大号缩略图；多图作品只取第一张 */
+      const pageWorkBlob = async (w) => {
+        if (w.ugoira && w.id) return await blobForUgoiraFrame(w.id, 0)
+        if (w.downloaded && Array.isArray(w.files) && w.files[0]) {
+          return await fetchImageBlob(BASE + '/lib-file?name=' + enc(w.name) + '&file=' + enc(w.files[0]) + '&w=0')
+        }
+        if (w.round && w.id) {
+          try { return await fetchImageBlob(BASE + '/thumb?round=' + enc(w.round) + '&id=' + enc(w.id)) } catch { /* 退到作品库缩略图 */ }
+        }
+        return await fetchImageBlob(BASE + '/lib-cover?name=' + enc(w.name) + '&w=1000')
+      }
+      /* 一键复制当前页：第一件图进 image/png（聊天框直接粘），全部作品的图进 text/html（富文本编辑器能拿到全部） */
+      const copyPageWorks = async () => {
+        if (!clipboardImageOk()) { say('这个界面不支持复制图片，请用 DSH 桌面端打开', 'warn'); return }
+        const size = pageSize
+        const page = works.slice((libPg - 1) * size, libPg * size)
+        if (!page.length) { say('这一页没有作品', 'warn'); return }
+        setPageCopyBusy(true)
+        try {
+          const pics = []
+          for (const w of page.slice(0, size)) {
+            try { pics.push({ w, png: await blobToPng(await pageWorkBlob(w)) }) } catch { /* 取不到就跳过 */ }
+          }
+          if (!pics.length) throw new Error('这一页的图都没能取回来')
+          const html = pics.map((p) => '<img src="' + BASE + '/lib-cover?name=' + encodeURIComponent(p.w.name) + '&w=900" alt="">').join('')
+          const text = pics.map((p) => (p.w.title || p.w.name) + (p.w.artist ? ' — ' + p.w.artist : '')).join('\n')
+          const data = {
+            'image/png': pics[0].png,
+            'text/html': new Blob(['<div>' + html + '</div>'], { type: 'text/html' }),
+            'text/plain': new Blob([text + '\n\n（多图一般只复制第一张哦）'], { type: 'text/plain' }),
+          }
+          await navigator.clipboard.write([new window.ClipboardItem(data)])
+          say('已复制 ' + pics.length + ' 件：聊天框粘贴是第一张，富文本编辑器能拿到全部', 'good')
+        } catch (e) {
+          say(String(e?.message ?? e), 'warn')
+        } finally { setPageCopyBusy(false) }
+      }
+      /* 一键复制本页「文件」：把整页作品挂成系统剪贴板的文件列表 —— 图片型剪贴板一次只能带一张，
+         文件列表可以一次带 20 个，QQ 聊天框里 Ctrl+V 就能连发整页。 */
+      /* 一键打包本页：压成一个 .7z，命名＝页码_第一件作品的标题；压完服务端会顺手挂进剪贴板 */
+      const packPage = async () => {
+        const size = pageSize
+        const full = works.slice((libPg - 1) * size, libPg * size)
+        if (!full.length) { say('这一页没有作品', 'warn'); return }
+        if (pagePackBusy) return
+        setPagePackBusy(true)
+        try {
+          const r = await api('/pack/page', {
+            page: libPg,
+            title: String(full[0]?.title || full[0]?.name || ''),
+            items: full.map((w) => ({ name: w.name, round: w.round || '', id: w.id || '' })),
+          })
+          const n = Number(r?.count) || 0
+          const mb = (Number(r?.bytes) || 0) / 1048576
+          say('已打包 ' + n + ' 件 → ' + String(r?.name || '') + '（' + mb.toFixed(1) + ' MB），已放进剪贴板，可直接粘到 QQ。\n自带密码「春」防止失效，1 小时后自动删除', 'good')
+        } catch (e) {
+          const st = Number(e?.status) || 0
+          say(st === 404 ? '这条要先重启 DSH（服务端新接口还没生效）' : String(e?.message ?? e), 'warn')
+        } finally { setPagePackBusy(false) }
+      }
+      const pageSliceNow = () => works.slice((libPg - 1) * pageSize, libPg * pageSize)
+      const pageTitle = (() => {
+        const first = pageSliceNow()[0]
+        const t0 = String(first?.title || first?.name || '本页作品').replace(/[\\/:*?"<>|]/g, ' ').trim().slice(0, 40)
+        return '[画廊]' + libPg + '_' + (t0 || '本页作品') + '『春』.7z'
+      })()
+      const wcount = pageSliceNow().length
+      const copyPageFiles = async (from = 0, take = 10) => {
+        const size = pageSize
+        const full = works.slice((libPg - 1) * size, libPg * size)
+        const page = full.slice(from, from + take)
+        if (!page.length) { say('这一页里没有这一段作品', 'warn'); return }
+        setPageFileBusy(true)
+        try {
+          const r = await api('/clipboard/works', {
+            items: page.map((w) => ({ name: w.name, round: w.round || '', id: w.id || '' })),
+          })
+          const n = Number(r?.count) || 0
+          if (!n) throw new Error('这一页的文件都没能准备好')
+          say('已把 ' + n + ' 个文件放进剪贴板：到 QQ 聊天框 Ctrl+V 一次发完', 'good')
+        } catch (e) {
+          const s = Number(e?.status) || 0
+          say(s === 404 ? '这条要先重启 DSH（服务端新接口还没生效）' : String(e?.message ?? e), 'warn')
+        } finally { setPageFileBusy(false) }
+      }
       const batchCopy = async () => {
         if (!picked.length) return
         setBatchBusy('copy')
@@ -5868,22 +6927,51 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
               },
             }, h('span', {}, '★ ' + t), h('span', { 'data-pg-sideright': '' }, tagNumOf(t))))) : null,
           h('div', { 'data-pg-sidegrp': '' },
-            h('div', { 'data-pg-sidehead': '' }, '作品库'),
-            h('button', { 'data-on': kind === 'all' ? '' : undefined, onClick: () => { setKind('all'); setName('') } }, '全部作品', h('span', {}, String(lib?.total ?? '')))),
-          h('div', { 'data-pg-sidegrp': '' },
-            h('div', { 'data-pg-sidehead': '' }, '收藏夹'),
-            (lib?.collections || []).map((c) => h('button', {
-              key: c.name, 'data-on': kind === 'collection' && name === c.name ? '' : undefined,
-              'data-pg-dropcoll': c.name,
-              'data-dropon': drag && drag.zone === 'coll:' + c.name ? '' : undefined,
-              title: '右键：打包 / 复制到同名文件夹 / 重命名 / 删除；把作品卡拖到这里可直接加入',
-              onClick: () => { setKind('collection'); setName(c.name) },
-              onContextMenu: (e) => openMenu(e, 'collection', c.name),
-            }, c.name, h('span', {}, String(c.count)))),
-            h('button', { onClick: newCollection, disabled: busy === 'collection' }, '＋ 新建收藏')),
-          h('div', { 'data-pg-sidegrp': '', 'data-pg-favdrop': '', 'data-dropon': drag && drag.zone === 'fav' ? '' : undefined },
-          h('div', { 'data-pg-sidehead': '' }, '按喜欢的标签分类'),
-          h('input', { 'data-pg-input': '', placeholder: '搜索喜欢的标签…', value: tagQ, onChange: (e) => setTagQ(e.target.value), style: { margin: '0 6px 6px' } }),
+            h('button', {
+              'data-on': kind === 'all' ? '' : undefined,
+              'data-pg-libentry': '',
+              title: '全部作品共 ' + String(lib?.total ?? '—') + ' 件；点一下回到作品库总览',
+              onClick: () => { setKind('all'); setName('') },
+            }, h('span', { 'data-pg-libentryname': '' }, '作品库·全部作品'), h('span', { 'data-pg-libentrynum': '', style: { fontSize: (12 + Math.min(1, (Number(lib?.total) || 0) / 500) * 8).toFixed(1) + 'px' } }, String(lib?.total ?? '')))),
+          h('div', { 'data-pg-sidegrp': '', 'data-folded': sideFold.coll ? '' : undefined },
+            h('div', { 'data-pg-sidehead': '', 'data-tone': 'yellow', title: '点击收起 / 展开收藏夹', onClick: () => toggleFold('coll') },
+              h('span', { 'data-pg-fold': '' }, '▾'), h('span', { 'data-pg-sideheadtext': '' }, '收藏夹'),
+              h('span', { 'data-pg-sidecount': '' }, String((lib?.collections || []).length))),
+            sideFold.coll ? null : h('div', { 'data-pg-collscroll': '', title: '只显示前 10 个；把鼠标放进来可以用滚轮上下翻' },
+            (lib?.collections || []).map((c) => {
+              const gold = c.name === PERFECT_COLLECTION
+              const pinned = !!c.pin || gold
+              return h('button', {
+                key: c.name,
+                'data-pg-collitem': '',
+                'data-pin': pinned ? (gold ? 'gold' : 'blue') : undefined,
+                'data-on': kind === 'collection' && name === c.name ? '' : undefined,
+                'data-pg-dropcoll': c.name,
+                'data-pg-collname': c.name,
+                'data-pg-colltier': tierOf(c),
+                'data-dropon': drag && drag.zone === 'coll:' + c.name ? '' : undefined,
+                'data-dragover': collDrag && collDrag.over === c.name ? '' : undefined,
+                'data-swapping': collDrag && collDrag.name === c.name ? '' : undefined,
+                onPointerDown: (e) => beginCollPress(e, c),
+                onPointerMove: collMovePress,
+                onPointerUp: cancelCollPress,
+                onPointerLeave: cancelCollPress,
+                onClick: () => { if (takeCollSkip()) return; setKind('collection'); setName(c.name) },
+                onContextMenu: (e) => openMenu(e, 'collection', c.name),
+                'data-pg-tip': gold ? '「藏赏两宜，无可挑剔」：当一件作品的所有自带标签都是你喜爱的标签、同时被你打了 10 分，它就会自动进这个收藏夹。\n这些作品绝对无可挑剔，能欣赏这样的杰作真乃人生一幸（建议深色模式鉴赏）' : undefined,
+                'data-pg-tip-rainbow': gold ? '' : undefined,
+              },
+                pinned ? h('svg', { 'data-pg-pinicon': '', 'data-pin': gold ? 'gold' : 'blue', viewBox: '0 0 24 24', width: 11, height: 11 }, h('path', { d: 'M14 2l8 8-3 1-4 4 1 5-2 2-4-6-6-4 2-2 5 1 4-4z', fill: 'currentColor' })) : null,
+                h('span', { 'data-pg-collname': '' }, c.name),
+                h('span', {}, String(c.count)))
+            })),
+            sideFold.coll ? null : h('button', { onClick: newCollection, disabled: busy === 'collection' }, '＋ 新建收藏')),
+          h('div', { 'data-pg-sidegrp': '', 'data-pg-taggrp': '', 'data-pg-favdrop': '', 'data-folded': sideFold.tag ? '' : undefined, 'data-dropon': drag && drag.zone === 'fav' ? '' : undefined },
+          h('div', { 'data-pg-sidehead': '', 'data-tone': 'sky', title: '点击收起 / 展开标签', onClick: () => toggleFold('tag') },
+            h('span', { 'data-pg-fold': '' }, '▾'), h('span', { 'data-pg-sideheadtext': '' }, '按喜欢的标签分类'),
+            h('span', { 'data-pg-sidecount': '' }, String((lib?.tags || []).length))),
+          sideFold.tag ? null : h('input', { 'data-pg-input': '', placeholder: '搜索喜欢的标签…', value: tagQ, onChange: (e) => setTagQ(e.target.value), style: { margin: '0 6px 6px' } }),
+          sideFold.tag ? null : h('div', { 'data-pg-tagscroll': '', title: '标签从这里一直排到底部；把鼠标放进来可以用滚轮上下翻' },
           (() => {
             const tgt = new Set((lib?.targetTags || []).map((x) => String(x).toLowerCase()))
             const all = (lib?.tags || []).filter((t) => !isSpecialTagName(t.name)).filter((t) => !tagQ.trim() || String(t.name).toLowerCase().includes(tagQ.trim().toLowerCase()))
@@ -5908,12 +6996,11 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
                 },
               }, (isTarget ? '★ ' : '') + t.name, h('span', { 'data-pg-sideright': '', title: t.name + '：作品在库数 / 总均分（' + tagNumOf(t.name) + '）' }, tagNumOf(t.name)))
             })
-          })(),
-          h('button', { onClick: newTag, disabled: busy === 'tag' }, '＋ 新建标签分类'),
+          })()),
           h('div', { 'data-pg-note': '', style: { padding: '8px' } }, '虚拟分类，不会在磁盘建文件夹。'))),
         h('div', { 'data-pg-lib-main': '' },
           h('div', { 'data-pg-filters': '' },
-            h('input', { 'data-pg-input': '', placeholder: '搜标题 / 画师 / 标签…', value: q, onChange: (e) => setQ(e.target.value), style: { flex: '1', minWidth: '180px' } }),
+            h('input', { 'data-pg-input': '', placeholder: '搜标题 / 画师 / 标签 / pid…', value: q, onChange: (e) => setQ(e.target.value), style: { flex: '1', minWidth: '180px' } }),
             h('select', { 'data-pg-input': '', value: sort, onChange: (e) => setSort(e.target.value), style: { maxWidth: '170px' } },
               h('option', { value: 'custom' }, '自定义（拖动排序）'),
               h('option', { value: 'score-desc' }, '评分从高到低'),
@@ -5938,8 +7025,21 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
               [10, 9, 8, 7, 6, 5, 4, 3, 2, 1].map((n) => h('option', { key: n, value: String(n) }, `${n} 分`))),
             h('span', { 'data-pg-note': '' }, `${works.length} / ${lib?.total ?? 0} 件`),
             h('button', { 'data-pg-btn': '', 'data-on': multi ? '' : undefined, onClick: () => (multi ? exitMulti() : setMulti(true)) }, multi ? '退出多选' : '多选'),
+            h('div', { 'data-pg-libpager': '' },
+              h('button', { 'data-pg-btn': '', 'data-pg-libprev': '', disabled: libPg <= 1, title: '上一页', onClick: () => goLibPage(Math.max(1, libPg - 1)) }, '‹ 上一页'),
+              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-copytop': '', 'data-pg-tip': '快分享小萝莉给我！——春灯笼（这 10 张一次粘进 QQ）', 'data-pg-tip-rainbow': '', disabled: pageFileBusy || !works.length, onClick: () => copyPageFiles(0, 10) },
+                pageFileBusy ? '准备文件…' : '复制前 10 张'),
+              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-tip': '一键打包本页 ' + wcount + ' 件成 .7z（文件名：' + pageTitle + '）\n自带密码「春」防止失效；压缩包是临时的，1 小时后自动删除\n建议先选「纯图模式」，一页 30 张能一次打完', 'data-pg-tip-rainbow': '', disabled: pagePackBusy || !works.length, onClick: packPage },
+                pagePackBusy ? '打包中…' : '打包本页 7z'),
+              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-tip': '后 10 张同样一次粘进 QQ——春灯笼', 'data-pg-tip-rainbow': '', disabled: pageFileBusy || works.length <= 10, onClick: () => copyPageFiles(10, 10) },
+                pageFileBusy ? '准备文件…' : '复制后 10 张'),
+              h('button', { 'data-pg-btn': '', 'data-pg-libnext': '', disabled: libPg >= libPages, title: '下一页', onClick: () => goLibPage(Math.min(libPages, libPg + 1)) }, '下一页 ›')),
             h('button', { 'data-pg-btn': '', onClick: openDownloadRoot }, '打开文件保存目录'),
-            h('button', { 'data-pg-btn': '', onClick: load }, '刷新')),
+            h('button', {
+              'data-pg-btn': '', 'data-on': pure ? '' : undefined, 'data-pg-purebtn': '',
+              'data-pg-tip': pure ? '退出纯图模式：恢复标题、评分、画师与标签，一页 20 张' : '纯图模式：只留封面，信息收起来，一页 30 张（更好一次性打包/分享）',
+              onClick: () => setPure(!pure)
+            }, pure ? '退出纯图' : '纯图模式')),
           multi ? h('div', { 'data-pg-batchbar': '' },
             h('span', { 'data-pg-batchcount': '' }, `已选 ${picked.length} 件`),
             h('button', { 'data-pg-btn': '', disabled: !works.length, onClick: () => setPicked(works.map((w) => w.name)) }, '全选本页'),
@@ -5955,13 +7055,15 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
                 h('option', { value: 'rar' }, 'rar'))),
             h('button', { 'data-pg-btn': '', 'data-danger': '', disabled: !picked.length || batchBusy === 'delete', onClick: batchDelete }, '删除')) : null,
           lib === null ? Empty({ text: '读取作品库…' })
-            : works.length ? h('div', { 'data-pg-lib-grid': '' }, gridItems.map((w) => w.__ph
+            : works.length ? h('div', { 'data-pg-lib-grid': '', 'data-pg-pure': pure ? '' : undefined }, gridItems.map((w) => w.__ph
               ? h('div', { key: '__ph', 'data-pg-dragph': '', style: { height: placeholderH + 'px' } })
               : h('article', {
               key: w.name, 'data-pg-lib-card': '', tabIndex: 0, role: 'button',
               'data-pg-name': w.name,
               title: w.dlState && w.dlState.text ? (w.title || w.name) + ' —— ' + w.dlState.text : undefined,
               'data-pg-masterpiece': isMasterpiece(w.userScore) ? '' : undefined,
+              'data-pg-rainbow': (isMasterpiece(w.userScore) && pgTagsAllLoved(w, lib)) ? '' : undefined,
+              style: { '--pg-glow': glowOf(w.userScore) },
               'data-picked': picked.includes(w.name) ? '' : undefined,
               'data-pg-downloaded': w.downloaded ? '' : undefined,
               'data-pg-partial': (w.downloaded && Array.isArray(w.files) && Number(w.pageCount || w.pages) > w.files.length) ? '' : undefined,
@@ -5971,6 +7073,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
               onContextMenu: (e) => { e.preventDefault(); e.stopPropagation(); setCardMenu({ work: w, blobP: blobForLibraryWork(w), x: Math.min(e.clientX, window.innerWidth - 250), y: Math.min(e.clientY, window.innerHeight - 320) }) },
               onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { if (e.target !== e.currentTarget) return; e.preventDefault(); e.stopPropagation(); if (multi) togglePick(w.name); else setSel(w) } },
             },
+            h('div', { 'data-pg-rainbowring': '' }),
             h('div', { className: 'lc' },
               w.cover ? h('img', { src: w.virtual ? `${BASE}/thumb?round=${enc(w.round)}&id=${enc(w.id)}` : `${BASE}/lib-cover?name=${enc(w.name)}&w=240`, loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
               h(CardMarks, { work: w }),
@@ -6033,11 +7136,11 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
                 if (own.length) return h('div', { 'data-pg-allfav': '' }, '该作品的所有标签你都喜欢，看来你真的很喜欢这个作品。')
                 return null
               })(),
-              h('div', { className: 'ln' }, `${w.pageCount || w.pages || 0} 页 · ${w.downloaded ? '已下载' : '未下载'} · 命中喜好 ${w.hitCount || 0}`),
+              h('div', { className: 'ln' }, `${w.pageCount || w.pages || 0} 页 · ${w.downloaded ? '已下载' : '未下载'} · 命中喜好 `, h('span', { 'data-pg-hitcount': '', 'data-hot': Number(w.hitCount) >= 10 ? '' : undefined, title: Number(w.hitCount) >= 10 ? '命中 10 个以上的喜爱标签' : undefined }, String(w.hitCount || 0))),
               w.downloaded ? h('button', { 'data-pg-folder': '', 'data-corner': '', tabIndex: -1, title: '打开本地文件', onClick: (e) => { e.stopPropagation(); openWorkDir(w) } }, FolderIcon()) : null,
               null))))
             : Empty({ text: kind === 'all' ? '作品库还没有已评分的作品。' : '这个清单下还没有作品。' }),
-          works.length > 20 ? h(Pager, { page: libPg, pages: libPages, onChange: goLibPage, total: works.length, pageSize: 20 }) : null),
+          works.length > pageSize ? h(Pager, { page: libPg, pages: libPages, onChange: goLibPageTop, total: works.length, pageSize }) : null),
         dropFx ? h('div', { 'data-pg-dropfx': '' }, dropFx.text) : null,
         sel ? h(WorkDetail2, { work: sel, allTags: (lib?.followedTags || lib?.favoriteTags || []), autoTags: (lib?.autoFavoriteTags || []), manualTags: (lib?.manualFavoriteTags || []), group: (kind === 'collection' || kind === 'tag') && name ? { kind, name } : null, onClose: () => setSel(null), onChanged: load, say, onLocate: locateWork }) : null,
         menu ? h('div', { 'data-pg-ctx-backdrop': '', onClick: () => setMenu(null) }) : null,
@@ -6055,6 +7158,28 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
               } catch (e) { say(String(e?.message ?? e), 'warn') }
             },
           }, (lib?.targetTags || []).some((x) => String(x).toLowerCase() === String(menu.name).toLowerCase()) ? '★ 取消目标标签' : '★ 设为目标标签') : null,
+          menu.type === 'collection' ? h('button', {
+            onClick: () => {
+              const cname = menu.name
+              const cur = (lib?.collections || []).find((c) => c.name === cname)
+              const on = !(cur && cur.pin)
+              setMenu(null)
+              if (cname === PERFECT_COLLECTION && !on) { say('「' + PERFECT_COLLECTION + '」是固定置顶，不能取消', 'warn'); return }
+              togglePin(cname, on, false)
+            },
+          }, (lib?.collections || []).some((c) => c.name === menu.name && c.pin) ? '📌 取消置顶' : '📌 置顶到最前') : null,
+          menu.type === 'collection' && menu.name !== PERFECT_COLLECTION ? h('button', {
+            onClick: () => {
+              const cname = menu.name
+              const cur = (lib?.collections || []).find((c) => c.name === cname)
+              const isGold = !!(cur && cur.pin && cur.gold)
+              setMenu(null)
+              togglePin(cname, !isGold, !isGold)
+            },
+          }, (() => {
+            const cur = (lib?.collections || []).find((c) => c.name === menu.name)
+            return cur && cur.pin && cur.gold ? '🏅 取消优先置顶' : '🏅 优先置顶（金针固定）'
+          })()) : null,
           h('button', { onClick: () => folderAction('pack') }, `打包为压缩包（${String(cfg?.archiveFormat || '7z').toUpperCase()}）`),
           h('hr'),
           h('button', { onClick: () => folderAction('rename') }, '重命名'),
@@ -6223,8 +7348,8 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             h('div', { 'data-pg-brand': '' }, 'Pixiv 知心画廊'),
         h('button', {
           'data-pg-buildchip': '',
-          title: '当前界面版本（点一下整页重取）',
-          onClick: () => pgReload(),
+          title: '当前界面版本 · 点一下检查更新',
+          onClick: () => pgAskUpdateCheck(),
         }, 'v' + CLIENT_BUILD),
             h('div', { 'data-pg-sub': '' }, `轮次 ${rounds?.length ?? '…'} · 作品库 ${libCount} 件`)),
           h('div', { 'data-pg-grow': '' }),
@@ -6239,7 +7364,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             h('span', { 'data-pg-swi-l': '' }, '刷全部'),
             h('i', { 'data-pg-swi-track': '' }, h('b', { 'data-pg-swi-knob': '' })),
             h('span', { 'data-pg-swi-r': '' }, '只刷已关注')),
-          h('button', { 'data-pg-btn': '', onClick: () => setSettings(true) }, '设置'),
+          h('button', { 'data-pg-btn': '', 'data-hue': 'amber', onClick: () => setSettings(true) }, '设置'),
           h('button', { 'data-pg-btn': '', onClick: () => { loadRounds(); say('已刷新', 'good') } }, '刷新')),
         msg ? h('div', { 'data-pg-msg': '', 'data-tone': tone || undefined }, msg) : null,
         view === 'rounds' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
@@ -6819,6 +7944,475 @@ async function gotoPixivSettings() {
   return true
 }
 
+/* ── 主界面 tips 词库 ─────────────────────────────────────────────
+   三类：科普（def，52 条）/ 安全提示（safe，30 条）/ special（彩蛋，11 条）
+   抽取概率：special 20%，科普 40%，安全 40%；各自按顺序往下走，走完一圈从头开始 */
+const PG_TIP_DEF = [
+  "完美卡片❤️ 的定义：卡片需”已完成“，原始均分需要8分，原始均分和当前均分的差距必须在1分以内（可改）",
+  "目标标签决定「跑一轮」去搜什么：没有目标标签就退到喜爱标签；两者都没有时只按分级和阈值刷。",
+  "喜爱标签是长期权重：命中越多越容易被推到前面，但它不等于「一张必须出现」。",
+  "黑名单标签里的作品根本不进候选，写一次长期有效，多个标签用分号隔开。",
+  "回收站默认保留 2 天、最多最近 50 件；超出的按删除时间从旧到新清掉，两个数字都能在设置里改。",
+  "「跑多轮」有一份整批额度：每轮张数 × 轮数 × 5 次抓图。用完后本次「跑多轮」就不再抓图。",
+  "有什么问题可以先问画廊检索~",
+  "进度条现在跨窗口存活：切走再回来会继续显示，跑完还会补一次结算卡。",
+  "严格度决定筛得多狠：越严格越少但越准，越宽松越多。",
+  "新鲜度是全局设置（不限 / 近 10 年 / 近 5 年 / 近 3 年 / 近 1 年）",
+  "选「不限时间」也不是只推老作：近 10 年内够用就先不往更旧的里翻，实在不够才一层层放宽。",
+  "R-18 / R-18G 是 pixiv 账号设置里的开关，插件只能间接地读它，不能替你改，也做不到。",
+  "开跑前的分级弹窗提醒一天只弹一次，后面再跑就不会再显示了。",
+  "取不到 R-18G 的图，多半是账号里那颗 R-18G 开关没开；即便是坠机预设，抓图的门槛也很低。",
+  "作品和卡片不是一回事：卡片是「这一轮抓到的一批作品」，作品被包含在其中。",
+  "收藏夹只是作品库的分组：收进收藏夹的同时也会进作品库，不存在只进收藏夹的情况。",
+  "一个 F 功能键只能绑一个收藏夹，绑新的会自动把旧的解掉，省得按错。",
+  "F1–F9 只在卡片的二级界面（大图灯箱）里生效；一级页面按 F 功能键不会有动作。",
+  "自定义卡片就是一张你想要的卡片，会出现在轮次列表最前面，评分、删除、进回收站都正常。",
+  "评分 0–10：默认 5 分及以下会被当成不满意，自动丢进回收站（阈值可在设置里改）。",
+  "原始均分＝当前还在卡片里的评分 + 后来被删掉但打过分的；当前均分只算还在卡片里的。",
+  "「已评分 12/16」里的 16 是卡片当前有效张数，删掉作品之后这个数会变小。",
+  "AI 精挑只看得到图和标签，不知道你心里的分数，所以它偶尔会时好时坏。",
+  "视觉模型有三条通路：自定义端点 → 本机 8326 网关 → DSH 宿主的当前模型，除非你在用的模型实在没法读图，要不然总能用这个核心功能的。",
+  "觉得当前的画风识别不准，可以在「视觉后端」里拉模型清单、换一个更会看图的模型。",
+  "最后只有已下载原图的和在回收站的作品的略缩图会被删除",
+  "画风与口味结论是抽样算的：9/10 分作品 + 最近的高分卡片，样本一变结论就会跟着变。",
+  "口味画像的标签权重会被你的评分反复修正：高分标签升、低分标签降，这是一个循环。",
+  "让路机制：DSH 里别的会话在忙时，插件会把并发压下去（最多降 30%），但不会打断抓图筛图和最后出卡片。",
+  "「刷全部 / 只刷已关注」是全局设置，决定候选从哪来。",
+  "搜索框里只输数字＝当天的第几轮，不是页码；想查pid可以去画廊检索↓里",
+  "卡片右上角的 ♥ 就是完美卡片标记，金边也是它自带的。",
+  "作品卡上的「命中」表示它命中了几个喜爱或目标标签。",
+  "封面图糊是故意的：缩略图省流量，想看清楚点就点进去仔细看或者直接下载原图",
+  "在二级界面，右键图片可以直接复制，粘到聊天框里就能直接发出去。",
+  "回收站能单件恢复，恢复后回到原来那张卡片里。",
+  "删除卡片是整个卡片内的作品进回收站；删除单件作品只影响那一件。",
+  "「一键收藏」会把当前卡片里还没下载的作品全部收到作品库。",
+  "下载目录在设置→下载里改，作品按 作者/标题_id 落盘。",
+  "自动下载阈值：分数达到阈值才自动下载，默认 9分及以上。",
+  "带黑名单标签的作品不会出现在你的画廊里。",
+  "作者均分是这位作者在你库里所有评分的平均分，不是单张作品的分数。",
+  "作者卡片上的小图标甚至作者名能跳到他在其它平台的页面（pixiv / fanbox / fantia 等）。",
+  "顶栏的版本号点击也能检查版本更新哦~",
+  "更新弹窗提示一天只弹一次；没有新版本就不弹。",
+  "设置里每一项都是即时自动保存的，没有「保存」按钮，改完直接关掉就行。",
+  "「画廊检索」能问画廊的用法，也能粘 pid 或链接查作品、直接收进作品库与收藏夹。",
+  "在检索里说要改什么它真的会改：加目标标签、建收藏夹、调开关，都会落到设置里。",
+  "检索的对话在 DSH 退出之前一直留着，可以一直往上翻。",
+  "检索用的模型就是你此刻在 DSH 里选的那个，换了模型下次提问就跟着换。",
+  "回收站的天数与件数都能在设置→回收站改，改小之后下一次清理立刻生效。",
+  "看到「已暂停」弹窗时，后面的轮次不会自己走；点「继续这一批」会从停下的那一轮接着跑。"
+]
+const PG_TIP_SAFE = [
+  "你的评分、收藏、下载记录全部存在本机 .dsh 目录里，不会上传到任何服务器。",
+  "插件只和 pixiv、以及你自己配置的模型端点通信，没有第三方统计埋点。",
+  "模型的 API Key 存在本地配置里，不会被打包，也不会随偏好预设导出。",
+  "分享截图前记得打码：里面有你的收藏、评分，也可能有作者名和账号信息。",
+  "只从仓库或你信任的来源更新插件，陌生人发的「新版安装包」不要点。",
+  "更新只认顶栏那颗提示和设置里的「检查更新」，别在群里点文件。",
+  "不要把自己的 pixiv cookie 或账号密码发给任何人，包括说「帮你修 bug」的。",
+  "用公共电脑时，用完清掉本机登录状态与下载目录。",
+  "代理 / VPN 只在你自己信任的客户端里开，插件不会替你装任何证书。",
+  "本插件截至目前还未触发过什么杀毒软件的警告⚠️，所以如果真提示了首先怀疑插件来源。",
+  "加群的二维码先确认来源再扫，插件只会用到官方群那一张。",
+  "下载目录是你的私人收藏，别顺手放到共享盘里。",
+  "备份很便宜：把 gallery.json 复制一份，换机器或重装都能接着用。",
+  "重装插件只覆盖代码目录、不会删你的数据；但自己手动删目录就救不回来了。",
+  "不要在设置里填来源不明的端点地址，那等于把你的图发给对方。",
+  "自定义视觉端点只填你信任的服务商；密钥一旦泄露，第一时间去后台吊销。",
+  "插件不会读你的系统凭据、浏览器密码或其它插件的数据。",
+  "隐藏成就只写在本地 localStorage，不上传、也不影响你的账号。",
+  "别把「自动下载」阈值调得过低，容量和流量都是自己的。",
+  "回收站也是本地数据，清空之后真的没了，删之前想清楚。",
+  "收到「账号异常，请点此登录」的私信，自己打开 pixiv 官网核对，别点私信里的链接。",
+  "有人让你把 gallery.json 发过去「帮你调偏好」，等于把整个收藏夹交出去。",
+  "抓太快会被 pixiv 限流，插件已经在让路，别自己连点刷新。",
+  "同一时间只跑一轮：多开窗口同时抓图更容易被限流。",
+  "更新日志里的命令只从仓库复制，不要从聊天记录里复制粘贴执行。",
+  "任何要你输入 DSH 账号密码的「插件」都别信，本插件也绝对不会主动询问和收集。",
+  "群文件、网盘里的「破解版」「去限制版」不要装，来源无法验证，直接根据仓库地址下载即可。",
+  "界面里冒出你没写过的提示时，先关掉再核对来源，不要照着它说的点。",
+  "长期不用的模型端点记得删掉，密钥留在配置里就是一份风险。。",
+  "有疑问先问插件作者，别把密钥、cookie 或整份数据发给陌生人。"
+]
+const PG_TIP_SPECIAL = [
+  "你知道吗？本插件是插件作者春灯笼做的第一个插件，包含了他对涩图自由的向往。。。",
+  "在正式的插件发布 v1.0.0 的时候，为了开发插件已喂给大肥鱼起码 160 块钱，感觉她白吃的部分也得有 10 块了。。。",
+  "画廊是有隐藏成就的~",
+  "人的 XP 相当复杂，就我来说，贫乳萝莉标签我一般都会从 6 分开始打，这就是默认 5 分及以下的作品会被自动删除的原因；当然有些作品抽象到就算全是我喜欢的标签我也只能打 0 分。。。",
+  "其实开发这个插件的时候离考研只差一个月了，但是我一点都没学。。。这样真能考上吗。。。？",
+  "开发插件的时候一直通宵熬夜，后半夜看大肥鱼晕头转向还把插件改坏了我真气晕了。",
+  "有好看的涩图一定要发群里啊！我甚至特意加了右键即可复制图片，直接粘贴就行了！",
+  "希望未来的有一天，画廊的新卡片张张都能达到 10 分甚至 9 分的水准，这样某个条件苛刻的隐藏成就就能很轻松地解锁了。",
+  "萝莉控是无敌哒！我当年应该是看了《点兔》的评论区后才知道，我原来应该被称为「萝莉控」这一群体，虽然也不知道哪来的自豪感。。。",
+  "既然来到了画廊就不要想太多，享受纵欲，忘掉那些烦心事吧。。。",
+  "通常来讲，对我来说评价某个画作的宗旨是「可爱第一！色气第二！帅气第三！■■第——」"
+]
+const PG_TIP_KIND = { def: '科普', safe: '安全提示', sp: 'special' }
+const PG_TIPS = [...PG_TIP_DEF, ...PG_TIP_SAFE, ...PG_TIP_SPECIAL]
+
+/* 按 20% / 40% / 40% 抽一条，并把「这个池子走到第几条」记进 localStorage，下次进界面接着往下刷 */
+function pgPickTip() {
+  let cur = { d: 0, s: 0, p: 0 }
+  try {
+    const raw = localStorage.getItem('pixiv-gallery.tips')
+    const o = raw ? JSON.parse(raw) : null
+    if (o) cur = { d: Number(o.d) || 0, s: Number(o.s) || 0, p: Number(o.p) || 0 }
+  } catch (e) { /* 存不了就每次从第一条开始 */ }
+  const roll = Math.random()
+  const kind = roll < 0.2 ? 'sp' : (roll < 0.6 ? 'def' : 'safe')
+  let text = ''
+  if (kind === 'sp') {
+    const i = ((cur.p % PG_TIP_SPECIAL.length) + PG_TIP_SPECIAL.length) % PG_TIP_SPECIAL.length
+    text = PG_TIP_SPECIAL[i]
+    cur.p = (i + 1) % PG_TIP_SPECIAL.length
+  } else if (kind === 'def') {
+    const i = ((cur.d % PG_TIP_DEF.length) + PG_TIP_DEF.length) % PG_TIP_DEF.length
+    text = PG_TIP_DEF[i]
+    cur.d = (i + 1) % PG_TIP_DEF.length
+  } else {
+    const i = ((cur.s % PG_TIP_SAFE.length) + PG_TIP_SAFE.length) % PG_TIP_SAFE.length
+    text = PG_TIP_SAFE[i]
+    cur.s = (i + 1) % PG_TIP_SAFE.length
+  }
+  try { localStorage.setItem('pixiv-gallery.tips', JSON.stringify(cur)) } catch (e) { /* 忽略 */ }
+  return { kind, text }
+}
+
+/* 画廊检索：一个像聊天框的入口 —— 平时问用法（默认用你此刻的模型），粘 pid 就查作品、收进库 */
+function LookupSheet({ onClose, say, theme = '' }) {
+  const [msgs, setMsgs] = React.useState(() => {
+    try {
+      const raw = sessionStorage.getItem('pixiv-gallery.lookup.chat')
+      const arr = raw ? JSON.parse(raw) : []
+      return Array.isArray(arr) ? arr.slice(-40) : []
+    } catch (e) { return [] }
+  })
+  const [input, setInput] = React.useState('')
+  const [imgs, setImgs] = React.useState([])
+  const [asking, setAsking] = React.useState(false)
+  const [res, setRes] = React.useState(null)
+  const [idx, setIdx] = React.useState(0)
+  const [coll, setColl] = React.useState('')
+  const [card, setCard] = React.useState('')
+  const [newCard, setNewCard] = React.useState(false)
+  const [msg, setMsg] = React.useState('')
+  const [busy, setBusy] = React.useState('')
+  const [cols, setCols] = React.useState([])
+  const [tip, setTip] = React.useState(0)
+  const [ttags, setTtags] = React.useState([])
+  const [tagIn, setTagIn] = React.useState('')
+  const [tagBusy, setTagBusy] = React.useState(false)
+  const [myScore, setMyScore] = React.useState('')
+  const [scoreMsg, setScoreMsg] = React.useState('')
+  const [libName, setLibName] = React.useState({})
+  const listRef = React.useRef(null)
+  /* 这份对话在同一枚渲染进程里一直留着（整个 DSH 退出才清），刷新也不丢 */
+  React.useEffect(() => {
+    try { sessionStorage.setItem('pixiv-gallery.lookup.chat', JSON.stringify(msgs.slice(-40))) } catch (e) { /* 存不下就算了 */ }
+  }, [msgs])
+  React.useEffect(() => { const el = listRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs, asking])
+
+  const loadCols = React.useCallback(async () => {
+    try {
+      const r = await api('/library')
+      const list = (r && r.collections) || []
+      setCols(list)
+      setColl((cur) => cur || (list[0] ? list[0].name : ''))
+    } catch (e) { /* 没有收藏夹也能只进作品库 */ }
+  }, [])
+
+  React.useEffect(() => { loadCols() }, [loadCols])
+  /* 作品库里 id → 目录名：打分接口要目录名，拿不到就说明这件还没进库 */
+  const loadLibMap = React.useCallback(async () => {
+    try {
+      const r = await api('/library')
+      const map = {}
+      ;((r && r.works) || []).forEach((w) => { if (w && w.id) map[String(w.id)] = String(w.name || '') })
+      setLibName(map)
+    } catch (e) { /* 作品库读不到就当没有 */ }
+  }, [])
+  React.useEffect(() => { loadLibMap() }, [loadLibMap])
+  React.useEffect(() => {
+    api('/tags/dynamic').then((r) => setTtags(Array.isArray(r && r.targetTags) ? r.targetTags : [])).catch(() => {})
+  }, [])
+  React.useEffect(() => {
+    const el = listRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [msgs, asking])
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+
+  const addTag = async (tag, on) => {
+    const t = String(tag || '').trim()
+    if (!t) return
+    setTagBusy(true)
+    try {
+      const r = await api('/tags/target', { tag: t, on: on !== false })
+      setTtags(Array.isArray(r && r.targetTags) ? r.targetTags : [])
+      if (on !== false) setTagIn('')
+      if (say) say((on === false ? '已取消目标标签：' : '已设为目标标签：') + t, 'good', 3000)
+    } catch (e) {
+      setMsg('标签没设上：' + String((e && e.message) || e))
+    } finally { setTagBusy(false) }
+  }
+
+  const addFiles = (files) => {
+    Array.from(files || []).slice(0, 4).forEach((f) => {
+      if (!f || !/^image\//.test(f.type || '')) return
+      const rd = new FileReader()
+      rd.onload = () => setImgs((cur) => cur.concat([String(rd.result || '')]).slice(0, 4))
+      rd.readAsDataURL(f)
+    })
+  }
+
+  /* 模型可以回一个带 actions 的 json 块，白名单内的动作由这里真的执行 */
+  const ACTION_KEYS = ['runFreshness', 'runStrictness', 'autoDownload', 'autoDownloadMinScore', 'blacklistTags']
+  const splitActions = (txt) => {
+    const raw = String(txt || '')
+    const m = raw.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/)
+    if (!m) return { text: raw, acts: [] }
+    let obj = null
+    try { obj = JSON.parse(m[1]) } catch (e) { return { text: raw, acts: [] } }
+    const list = Array.isArray(obj && obj.actions) ? obj.actions : []
+    return { text: raw.replace(m[0], '').trim(), acts: list.filter((a) => a && typeof a === 'object') }
+  }
+  const runActions = async (list) => {
+    const done = []
+    for (const a of list.slice(0, 6)) {
+      const verb = String(a.do || '')
+      try {
+        if (verb === 'tag.add' || verb === 'tag.remove') {
+          const tag = String(a.tag || '').trim()
+          if (!tag) { done.push('跳过：没写标签名'); continue }
+          const on = verb === 'tag.add'
+          await api('/tags/target', { tag, on })
+          setTtags((cur2) => (on ? (cur2.includes(tag) ? cur2 : cur2.concat([tag])) : cur2.filter((x) => x !== tag)))
+          done.push((on ? '已加目标标签「' : '已删目标标签「') + tag + '」')
+        } else if (verb === 'collection.create') {
+          const name = String(a.name || '').trim()
+          if (!name) { done.push('跳过：没写收藏夹名'); continue }
+          await api('/collection/create', { name })
+          await loadCols()
+          done.push('已建收藏夹「' + name + '」')
+        } else if (verb === 'config.set' || verb === 'setting.set') {
+          const key = String(a.key || '')
+          if (!ACTION_KEYS.includes(key)) { done.push('跳过：不允许改 ' + (key || '(空)')); continue }
+          await api('/config', { [key]: a.value })
+          done.push('已把 ' + key + ' 设成 ' + JSON.stringify(a.value))
+        } else {
+          done.push('跳过：不认识的动作 ' + (verb || '(空)'))
+        }
+      } catch (e) { done.push('失败：' + (verb || '?') + ' —— ' + String((e && e.message) || e).slice(0, 80)) }
+    }
+    return done
+  }
+
+  const ask = async () => {
+    const q = String(input || '').trim()
+    if (!q && !imgs.length) { setMsg('先写一句问题，或者粘一张图进来'); return }
+    const mine = { role: 'user', text: q, imgs: imgs.slice() }
+    const next = msgs.concat([mine])
+    setMsgs(next); setInput(''); setImgs([]); setAsking(true); setMsg('')
+    try {
+      const r = await api('/gallery/ask', {
+        question: q,
+        images: mine.imgs,
+        history: msgs.slice(-6).map((m) => ({ role: m.role, text: m.text })),
+      })
+      const sp = splitActions(String((r && r.text) || ''))
+      const tail = next.concat([{ role: 'assistant', text: sp.text || (sp.acts.length ? '（动手了，见下）' : '（模型没回答）') }])
+      setMsgs(tail)
+      if (sp.acts.length) {
+        const done = await runActions(sp.acts)
+        setMsgs(tail.concat([{ role: 'assistant', act: true, text: '已经替你改了：\n· ' + done.join('\n· ') }]))
+      }
+    } catch (e) {
+      setMsgs(next.concat([{ role: 'assistant', bad: true, text: '问不动：' + String((e && e.message) || e) }]))
+    } finally { setAsking(false) }
+  }
+
+  const lookup = async () => {
+    const raw = String(input || '').trim()
+    if (!raw) { setMsg('先粘一个 pid 或 pixiv 网址进来'); return }
+    setBusy('q'); setMsg('正在查 pixiv…')
+    try {
+      const r = await api('/work/lookup', { input: raw })
+      const items = (r && r.items) || []
+      setRes({ kind: String((r && r.kind) || 'illust'), items })
+      setIdx(0)
+      setMsg(items.length ? ('查到 ' + items.length + ' 件') : '没查到，换个 pid 或网址试试')
+    } catch (e) {
+      setRes(null)
+      setMsg('没查到：' + String((e && e.message) || e))
+    } finally { setBusy('') }
+  }
+
+  /* 只剩一颗按钮：输入像 pid/网址就查作品，否则当问题去问模型 */
+  const go = async () => {
+    const raw = String(input || '').trim()
+    const looksWork = /^\d{4,12}$/.test(raw) || /pixiv\.net\/(?:[a-z]{2}\/)?(?:artworks|i|collections?|users\/\d+\/artworks)/i.test(raw)
+    if (looksWork) return lookup()
+    return ask()
+  }
+
+  const doScore = async (v) => {
+    const it = cur
+    if (!it || v === '') return
+    const nm = libName[String(it.id)] || ''
+    if (!nm) { setScoreMsg('这件还没进作品库 —— 先点「收进来」，再打分'); setMyScore(''); return }
+    setScoreMsg('正在打分…')
+    try {
+      const r = await api('/rate-lib', { name: nm, id: String(it.id), score: Number(v) })
+      setMyScore(String(v))
+      setScoreMsg('已打 ' + Number(v) + ' 分' + (r && r.name ? '（作品库：' + String(r.name).slice(0, 26) + '）' : ''))
+      setRes((old) => (old ? { ...old, items: old.items.map((x) => (String(x.id) === String(it.id) ? { ...x, score: Number(v) } : x)) } : old))
+    } catch (e) {
+      setScoreMsg('打不了分：' + String((e && e.message) || e) + ' —— 先点「收进来」进作品库，再打分')
+    }
+  }
+
+  const collect = async (which) => {
+    const items = (res && res.items) || []
+    const pick = which === 'all' ? items.slice(0, 40) : (items[idx] ? [items[idx]] : [])
+    const ids = pick.map((x) => String(x.id)).filter(Boolean)
+    if (!ids.length) { setMsg('还没有查到的作品'); return }
+    setBusy('c'); setMsg('正在下载并收录（' + ids.length + ' 件）…')
+    try {
+      const r = await api('/work/quick-collect', { ids, collection: coll || '', newCard: !!newCard, cardName: card || '' })
+      const bits = ['收进作品库 ' + ((r && r.saved) || 0) + ' 件']
+      if (r && r.collection) bits.push('收藏夹「' + r.collection + '」')
+      if (r && r.round) bits.push('新卡片 ' + r.round)
+      if (r && r.failed && r.failed.length) bits.push('失败 ' + r.failed.length + ' 件：' + String((r.failed[0] && r.failed[0].error) || '').slice(0, 60))
+      setMsg(bits.join(' · '))
+      if (say) say('已收进来 ' + ((r && r.saved) || 0) + ' 件', 'good', 4200)
+      loadCols()
+      loadLibMap()
+    } catch (e) {
+      setMsg('收录失败：' + String((e && e.message) || e))
+    } finally { setBusy('') }
+  }
+
+  const cur = (res && res.items && res.items.length)
+    ? (res.items[Math.min(idx, res.items.length - 1)] || res.items[0])
+    : null
+
+  return h('div', {
+    'data-pg-modal': '', 'data-pg-lookupsheet': '', 'data-pg-theme': theme || undefined,
+    onClick: (e) => { if (e.target === e.currentTarget) onClose() },
+  },
+  h('div', { 'data-pg-lkpanel': '' },
+    h('div', { 'data-pg-lkhead': '' },
+      h('div', { 'data-pg-lktitle': '' }, '画廊检索'),
+      h('button', { 'data-pg-btn': '', type: 'button', onClick: onClose }, '关闭')),
+    h('div', { 'data-pg-lkchat': '', ref: listRef },
+      msgs.length === 0
+        ? h('div', { 'data-pg-lkhello': '' },
+          h('b', {}, '这里可以问画廊怎么用，也可以粘图进来问。'),
+          h('div', { 'data-pg-lkhelloline': '' }, '比如「跑多轮为什么停在第 3 轮」「F5 是什么」「这张图用什么标签找」；查作品就把 pid 或 pixiv 链接贴进来点「搜索一下」。'))
+        : null,
+      msgs.map((m, i3) => h('div', { key: 'lk' + i3, 'data-pg-lkrow': m.role === 'user' ? 'me' : 'ai' },
+        (m.imgs || []).length
+          ? h('div', { 'data-pg-lkimgs': '' }, (m.imgs || []).map((s2, j) => h('img', { key: 'mi' + j, src: s2, alt: '' })))
+          : null,
+        h('div', { 'data-pg-lkbubble': m.bad ? 'bad' : m.role }, m.text || ''))),
+      asking ? h('div', { 'data-pg-lkrow': 'ai' }, h('div', { 'data-pg-lkbubble': 'ai' }, '想一下…')) : null),
+    (res && res.items && res.items.length)
+      ? h('div', { 'data-pg-lkres': '' },
+        h('div', { 'data-pg-lkbig': '' },
+          h('img', { src: BASE + '/thumb-by-id?id=' + encodeURIComponent(cur.id) + '&w=1100', alt: cur.title || '', loading: 'eager' })),
+        h('div', { 'data-pg-lkinfo': '' },
+          h('div', { 'data-pg-lkname': '' }, String(cur.title || '无题')),
+          h('div', { 'data-pg-lkby': '' },
+            (cur.artist || '未知作者') + ' · #' + cur.id + ' · ' + (cur.pages || 1) + ' 页'
+            + (cur.rating === 'r18' ? ' · R-18' : cur.rating === 'r18g' ? ' · R-18G' : '')
+            + ((cur.bookmarks || cur.views) ? (' · 收藏 ' + (cur.bookmarks || 0) + ' / 浏览 ' + (cur.views || 0)) : '')),
+          h('div', { 'data-pg-lktags': '' }, (cur.tags || []).slice(0, 16).join(' / ')),
+          h('a', {
+            'data-pg-lklink': '', href: cur.url || ('https://www.pixiv.net/artworks/' + cur.id),
+            target: '_blank', rel: 'noreferrer',
+          }, '在 pixiv 打开 ↗'),
+          h('div', { 'data-pg-lkacts': '' },
+            h('span', { 'data-pg-lkmeta': '' }, '打分'),
+            h('select', {
+              'data-pg-in': '', value: myScore,
+              onChange: (e) => { const v2 = e.target.value; setMyScore(v2); doScore(v2) },
+            },
+            h('option', { value: '' }, '未评'),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => h('option', { key: 'lksc' + n, value: String(n) }, n + ' 分'))),
+            scoreMsg ? h('span', { 'data-pg-lkmeta': '' }, scoreMsg) : null),
+          h('div', { 'data-pg-lkacts': '' },
+            h('select', { 'data-pg-in': '', value: coll, onChange: (e) => setColl(e.target.value) },
+              h('option', { value: '' }, '（只进作品库）'),
+              cols.map((c) => h('option', { key: 'lkc' + c.name, value: c.name }, (c.display || c.name) + ' · ' + (c.count || 0)))),
+            h('input', {
+              'data-pg-in': '', type: 'text', value: card, placeholder: '新卡片名（可留空）',
+              onChange: (e) => setCard(e.target.value), style: { width: '156px' },
+            }),
+            h('label', { 'data-pg-lkcheck': '' },
+              h('input', { type: 'checkbox', checked: newCard, onChange: (e) => setNewCard(e.target.checked) }),
+              '顺便建一张自定义卡片'),
+            h('button', {
+              'data-pg-btn': '', 'data-primary': '', type: 'button', disabled: busy === 'c',
+              style: { opacity: busy === 'c' ? 0.6 : 1 },
+              onClick: () => collect('one'),
+            }, busy === 'c' ? '收录中…' : '收进来'),
+            res.items.length > 1 ? h('button', {
+              'data-pg-btn': '', type: 'button', disabled: busy === 'c',
+              onClick: () => collect('all'),
+            }, '全收（' + Math.min(40, res.items.length) + ' 件）') : null),
+          res.items.length > 1
+            ? h('div', { 'data-pg-lkstrip': '' }, res.items.slice(0, 24).map((x, i4) => h('img', {
+              key: 'lks' + x.id,
+              src: BASE + '/thumb-by-id?id=' + encodeURIComponent(x.id) + '&w=180',
+              alt: x.title || '', title: x.title || '', loading: 'lazy',
+              'data-on': i4 === idx ? '' : undefined,
+              onClick: () => setIdx(i4),
+            })))
+            : null))
+      : null,
+    msg ? h('div', { 'data-pg-lkmsg': '' }, msg) : null,
+    h('div', { 'data-pg-lktagsbar': '' },
+      h('span', { 'data-pg-lkmeta': '' }, '目标标签'),
+      ttags.length
+        ? ttags.map((t) => h('button', {
+          key: 'lkt' + t, 'data-pg-lkchip': '', type: 'button', title: '点一下取消',
+          onClick: () => addTag(t, false),
+        }, String(t) + ' ×'))
+        : h('span', { 'data-pg-lkmeta': '' }, '（还没有目标标签，右边加一个）'),
+      h('input', {
+        'data-pg-in': '', type: 'text', value: tagIn, placeholder: '比如 白丝 / 萝莉', style: { width: '150px' },
+        onChange: (e) => setTagIn(e.target.value),
+        onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(tagIn, true) } },
+      }),
+      h('button', { 'data-pg-btn': '', type: 'button', disabled: tagBusy || !tagIn.trim(), onClick: () => addTag(tagIn, true) }, '加')),
+    h('div', { 'data-pg-lkinput': '' },
+      imgs.length
+        ? h('div', { 'data-pg-lkimgs': '' }, imgs.map((s3, j) => h('img', {
+          key: 'ai' + j, src: s3, alt: '', title: '点一下移除',
+          onClick: () => setImgs((cur2) => cur2.filter((_, k2) => k2 !== j)),
+        })))
+        : null,
+      h('textarea', {
+        'data-pg-in': '', rows: 2, value: input,
+        placeholder: '写问题按回车就发（Shift+回车换行）；粘 pid / 作品网址回车就查；Ctrl+V 可直接粘图',
+        onChange: (e) => setInput(e.target.value),
+        onPaste: (e) => {
+          const fs2 = e.clipboardData && e.clipboardData.files
+          if (fs2 && fs2.length) { e.preventDefault(); addFiles(fs2) }
+        },
+        onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go() } },
+      }),
+      h('div', { 'data-pg-lkbtns': '' },
+        h('button', {
+          'data-pg-btn': '', 'data-primary': '', type: 'button', disabled: asking || busy === 'q',
+          style: { opacity: asking || busy === 'q' ? 0.6 : 1 },
+          onClick: () => go(),
+        }, asking ? '想…' : busy === 'q' ? '查…' : '搜索一下'),
+        h('span', { 'data-pg-lkmeta': '' }, '粘 pid / 网址就查作品，写问题就用你此刻的模型回答 · Ctrl+V 粘图')))))
+}
+
 function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = null, openPanel = '' }) {
       const [panel, setPanel] = React.useState('')
       /* 从跑轮前的拦截弹窗跳进来时，直接落在「视觉后端」那一栏 */
@@ -6930,6 +8524,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       const [all, setAll] = React.useState(true)
       const [autoAdd, setAutoAdd] = React.useState(true)
       const [trashDays, setTrashDays] = React.useState(2)
+  const [trashKeep, setTrashKeep] = React.useState(50)
       const [followed, setFollowed] = React.useState(0)
       const [downloadRoot, setDownloadRoot] = React.useState('')
       const [resolvedRoot, setResolvedRoot] = React.useState('')
@@ -7037,6 +8632,17 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
   const [visionHubNote, setVisionHubNote] = React.useState('')
   const [visionHub, setVisionHub] = React.useState(null)
   const [visionInstalling, setVisionInstalling] = React.useState(false)
+  /* 画廊检索：pid / 网址 / 关键词查作品，收进作品库与收藏夹，顺带给收藏夹绑 F 键 */
+  const [lkInput, setLkInput] = React.useState('')
+  const [lkBusy, setLkBusy] = React.useState('')
+  const [lkRes, setLkRes] = React.useState(null)
+  const [lkMsg, setLkMsg] = React.useState('')
+  const [lkIdx, setLkIdx] = React.useState(0)
+  const [lkColl, setLkColl] = React.useState('')
+  const [lkCard, setLkCard] = React.useState('')
+  const [lkNewCard, setLkNewCard] = React.useState(true)
+  const [lkCols, setLkCols] = React.useState([])
+  const [tipIdx, setTipIdx] = React.useState(0)
   /* 检测本机网关：按钮和「打开面板就自动跑一次」共用这一份逻辑。
      说明口径固定一句：三渠道都不可用时，最后兜底的是 DSH 宿主自带的 DeepSeek 视觉模型。 */
   const checkVisionHub = React.useCallback(async () => {
@@ -7057,11 +8663,80 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       setVisionHubNote(parts.join('；'))
     } catch (e) { setVisionHubNote('检测失败：' + String(e?.message ?? e)) }
   }, [])
+  /* 画廊检索的两个动作：查、收 */
+  const doLookup = React.useCallback(async () => {
+    const raw = String(lkInput || '').trim()
+    if (!raw) { setLkMsg('先粘一个 pid 或网址进来'); return }
+    setLkBusy('q'); setLkMsg('正在查 pixiv…')
+    try {
+      const r = await api('/work/lookup', { input: raw })
+      const items = Array.isArray(r && r.items) ? r.items : []
+      setLkRes({ kind: String(r && r.kind || 'illust'), items })
+      setLkIdx(0)
+      setLkMsg(items.length === 1
+        ? ('查到了：' + items[0].title)
+        : ('查到 ' + items.length + ' 件（' + (r && r.kind === 'collection' ? '收藏集' : '搜索结果') + '），点封面切换')
+      )
+    } catch (e) {
+      setLkRes(null)
+      setLkMsg('没查到：' + String(e?.message ?? e))
+    } finally { setLkBusy('') }
+  }, [lkInput])
+  const doCollect = React.useCallback(async (which) => {
+    const items = (lkRes && lkRes.items) || []
+    const pick = which === 'all' ? items.slice(0, 40) : (items[lkIdx] ? [items[lkIdx]] : [])
+    const ids = pick.map((x) => String(x.id)).filter(Boolean)
+    if (!ids.length) { setLkMsg('还没有查到的作品'); return }
+    setLkBusy('c'); setLkMsg('正在下载并收录（' + ids.length + ' 件）…')
+    try {
+      const r = await api('/work/quick-collect', {
+        ids,
+        collection: lkColl || '',
+        newCard: Boolean(lkNewCard),
+        cardName: lkCard || '',
+      })
+      const bits = ['收进作品库 ' + (r.saved || 0) + ' 件']
+      if (r.collection) bits.push('收藏夹「' + r.collection + '」')
+      if (r.round) bits.push('新卡片 ' + r.round)
+      if (Array.isArray(r.failed) && r.failed.length) bits.push('失败 ' + r.failed.length + ' 件')
+      setLkMsg(bits.join(' · '))
+      if (typeof say === 'function') say(bits.join(' · '), r.failed && r.failed.length ? 'warn' : 'good', 5200)
+      if (typeof onSaved === 'function') onSaved()
+      api('/library').then((lib) => {
+        const list = Array.isArray(lib && lib.collections) ? lib.collections.map((c) => ({ name: String(c.name || ''), display: String(c.display || c.name || ''), key: String(c.key || ''), count: Number(c.count) || 0 })) : []
+        setLkCols(list)
+      }).catch(() => {})
+    } catch (e) {
+      setLkMsg('收录失败：' + String(e?.message ?? e))
+    } finally { setLkBusy('') }
+  }, [lkRes, lkIdx, lkColl, lkNewCard, lkCard, say, onSaved])
+  const bindKey = React.useCallback(async (name, key) => {
+    try {
+      await api('/collections/keys', { name, key })
+      const lib = await api('/library')
+      const list = Array.isArray(lib && lib.collections) ? lib.collections.map((c) => ({ name: String(c.name || ''), display: String(c.display || c.name || ''), key: String(c.key || ''), count: Number(c.count) || 0 })) : []
+      setLkCols(list)
+      setLkMsg(key ? ('「' + name + '」绑到 ' + key) : ('「' + name + '」取消了快捷键'))
+    } catch (e) { setLkMsg('绑定失败：' + String(e?.message ?? e)) }
+  }, [])
   /* 面板一打开就自己探一次：新用户不该先学会「点检测」才知道自己缺什么 */
   React.useEffect(() => {
     if (panel !== 'vision') return
     checkVisionHub()
   }, [panel, checkVisionHub])
+  /* 画廊检索：进来就拉一次收藏夹（带 F 键绑定），并把 tips 每 30 秒换一条 */
+  React.useEffect(() => {
+    if (panel !== 'lookup') return undefined
+    let stop = false
+    api('/library').then((r) => {
+      if (stop) return
+      const list = Array.isArray(r && r.collections) ? r.collections.map((c) => ({ name: String(c.name || ''), display: String(c.display || c.name || ''), key: String(c.key || ''), count: Number(c.count) || 0 })) : []
+      setLkCols(list)
+      setLkColl((cur) => cur || (list[0] ? list[0].name : ''))
+    }).catch(() => { /* 空库也能检索 */ })
+    const iv = window.setInterval(() => setTipIdx((i) => (i + 1) % PG_TIPS.length), 30000)
+    return () => { stop = true; window.clearInterval(iv) }
+  }, [panel])
   const [visionEffort, setVisionEffort] = React.useState('normal')
   const [visionModels, setVisionModels] = React.useState([])
   const [tagStats, setTagStats] = React.useState([])
@@ -7113,7 +8788,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       const [achMap2, setAchMap2] = React.useState(() => readAch())
       const [achOpen, setAchOpen] = React.useState(null)
       const [achDetail, setAchDetail] = React.useState(null)
-      const [perfectRule, setPerfectRule] = React.useState({ on: true, gapMax: 0.2, minScore: 8.5 })
+      const [perfectRule, setPerfectRule] = React.useState({ on: true, gapMax: 1, minScore: 8 })
       const [autoSocial, setAutoSocial] = React.useState({ on: true, minScore: 9, restrict: 'auto' })
       const [accMode, setAccMode] = React.useState('instant')
       const [accInterval, setAccInterval] = React.useState(30)
@@ -7166,6 +8841,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           setAll(c.showInAllWorkspaces !== false)
           setAutoAdd(c.autoAddRated !== false)
           setTrashDays(Number(c.trashDays) || 2)
+    setTrashKeep(Number(c.trashKeep) || 50)
           setFollowed(Array.isArray(r.followedTags) ? r.followedTags.length : 0)
           setDownloadRoot(c.downloadRoot || '')
           setPixivDep(c.pixivDep || r.pixivDep || null)
@@ -7223,8 +8899,8 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           setRoundScoring({ enabled: true })
           setPerfectRule({
             on: c.cardRules?.perfect?.on !== false,
-            gapMax: Number(c.cardRules?.perfect?.gapMax ?? 0.2),
-            minScore: Number(c.cardRules?.perfect?.minScore ?? 8.5),
+            gapMax: Number(c.cardRules?.perfect?.gapMax ?? 1),
+            minScore: Number(c.cardRules?.perfect?.minScore ?? 8),
           })
           setAutoSocial({
             on: c.workRules?.autoSocial?.on !== false,
@@ -7255,6 +8931,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
         showInAllWorkspaces: all,
         autoAddRated: autoAdd,
         trashDays: Math.max(1, Math.min(3650, Number(trashDays) || 2)),
+      trashKeep: Math.max(1, Math.min(500, Number(trashKeep) || 50)),
         downloadRoot,
         fileNameTemplate: fileTemplate,
         dirTemplate,
@@ -7339,7 +9016,7 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
           }
         }, 800)
         return () => clearTimeout(t)
-      }, [paths, tags, all, autoAdd, trashDays, downloadRoot, fileTemplate, dirTemplate, maxPages, autoCachePages,
+      }, [paths, tags, all, autoAdd, trashDays, trashKeep, downloadRoot, fileTemplate, dirTemplate, maxPages, autoCachePages,
         maxImageMB, maxCacheWorks, archiveFormat, followedOnly, mustPush, minPush, dislike,
         runCards, runImages, runKeywords, runBlacklist, prefAuto, scoreStops, scoreLabels, labelColors,
         authorRules, autoDownload, autoDownloadMinScore, roundScoring, perfectRule, autoSocial, accMode, accInterval,
@@ -8133,7 +9810,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
           }, reloadBusy ? '重启中…' : '重启 DSH'),
           h('span', { 'data-pg-savedflag': '', 'data-tone': savedTone }, saveMsg),
           h('button', {
-            'data-pg-setx': '', type: 'button', title: '关闭设置（Esc 不生效，必须点这里）',
+            'data-pg-setx': '', type: 'button', title: '关闭设置（也可以按 Esc）',
             'aria-label': '关闭设置',
             onClick: (e) => { e.stopPropagation(); onClose() },
           }, '×')),
@@ -8261,8 +9938,8 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
                   ? h('span', { 'data-pg-tagstat': '', title: '这个标签还没有评分' }, '均分 ', h('b', {}, '—'))
                   : h('button', {
                       'data-pg-tagavg': '', title: '总均分：点一下手动修改（改过之后 +N 会 +1）',
-                      onClick: () => { setAvgTag(it.tag); setAvgVal(String(it.avg)) },
-                    }, '均分 ', h('b', {}, String(it.avg))))
+                      onClick: () => { setAvgTag(it.tag); setAvgVal(String(Number(it.avg).toFixed(2))) },
+                    }, '均分 ', h('b', {}, Number(it.avg).toFixed(2))))
               return [
                 h('div', { 'data-pg-taghead': '', key: 'head' },
                   h('span', {}, ''), h('span', {}, '喜爱的标签'), h('span', {}, '在库作品数'), h('span', {}, '被评分次数'), h('span', {}, '当前均分')),
@@ -8271,7 +9948,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             })(),
             avgTag ? h('div', { 'data-pg-row': '', style: { alignItems: 'center' } },
               h('span', { 'data-pg-note': '', 'data-tone': 'warn' }, '修改「' + avgTag + '」的总均分会直接改变推荐与偏好，确定吗？'),
-              h('input', { 'data-pg-input': '', type: 'number', step: '0.1', min: 0, max: 10, value: avgVal, onChange: (e) => setAvgVal(e.target.value), style: { maxWidth: '90px' } }),
+              h('input', { 'data-pg-input': '', type: 'number', step: '0.01', min: 0, max: 10, value: avgVal, onChange: (e) => setAvgVal(e.target.value), style: { maxWidth: '90px' } }),
               h('button', {
                 'data-pg-btn': '', 'data-primary': '',
                 onClick: async () => {
@@ -8303,7 +9980,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
                 h('span', { 'data-pg-tag': '' }, it.tag),
                 h('span', { 'data-pg-tagstat': '' }, h('b', {}, String(it.works)), ' 件'),
                 h('span', { 'data-pg-tagstat': '' }, h('b', {}, String(it.rated)), ' 次'),
-                h('span', { 'data-pg-tagstat': '', 'data-pg-tagavg-fixed': '', title: '不能更改，也不会影响推送' }, '均分 ', h('b', {}, it.avg === null || it.avg === undefined ? '—' : String(it.avg))))
+                h('span', { 'data-pg-tagstat': '', 'data-pg-tagavg-fixed': '', title: '不能更改，也不会影响推送' }, '均分 ', h('b', {}, it.avg === null || it.avg === undefined ? '—' : Number(it.avg).toFixed(2))))
               return [h('div', { 'data-pg-taghead': '', key: 'sphead' },
                 h('span', {}, ''), h('span', {}, '标签'), h('span', {}, '在库作品数'), h('span', {}, '被评分次数'), h('span', {}, '当前均分')),
                 h('div', { 'data-pg-taglist': '', 'data-speciallist': '', key: 'splist' }, sp.map(mk))]
@@ -8559,7 +10236,9 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
           h('div', { 'data-pg-section2': '' }, '回收站'),
           h('div', { 'data-pg-row2': '' },
             field('默认保存天数', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 3650, value: trashDays, onChange: (e) => setTrashDays(e.target.value), style: { maxWidth: '120px' } }),
-              '超时后只清除缩略图和元数据，保留评分；左侧「回收站」可单个或批量彻底删除')),
+              '超时后只清除缩略图和元数据，保留评分'),
+            field('最多保留件数', h('input', { 'data-pg-input': '', type: 'number', min: 1, max: 500, value: trashKeep, onChange: (e) => setTrashKeep(e.target.value), style: { maxWidth: '120px' } }),
+              '默认 50：超出后按删除时间丢掉最旧的记录（评分、收藏、作品库都不受影响）；左侧「回收站」可单个或批量彻底删除')),
           )),
         secModal('account', '账号读取与流量', '#a3e635',
           h('div', { 'data-pg-box': 'group' },
@@ -8629,11 +10308,11 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
           h('div', { 'data-pg-row2': '' },
             field('两个评分的差不超过',
               h('input', { 'data-pg-input': '', type: 'number', min: 0, max: 5, step: 0.1, value: perfectRule.gapMax, onChange: (e) => setPerfectRule({ ...perfectRule, gapMax: e.target.value }) }),
-              '默认 0.2'),
-            field('两个评分都要高于',
+              '默认 1'),
+            field('原始均分不低于',
               h('input', { 'data-pg-input': '', type: 'number', min: 0, max: 10, step: 0.5, value: perfectRule.minScore, onChange: (e) => setPerfectRule({ ...perfectRule, minScore: e.target.value }) }),
-              '默认 8.5')),
-          h('div', { 'data-pg-note2': '' }, '「两个评分」= 原始均分（这一轮里打过分、后来被移出的也算）和当前均分（只算还在这一轮里的作品）；两个都高于下限且相差不超过差值上限时，这一轮就算完美卡片。'),
+              '默认 8')),
+          h('div', { 'data-pg-note2': '' }, '「两个评分」= 原始均分（这一轮里打过分、后来被移出的也算）和当前均分（只算还在这一轮里的作品）；两个都不低于下限且相差不超过差值上限时，这一轮就算完美卡片。'),
           h('div', { 'data-pg-section': '' }, '个性化 · 评分颜色'),
           h('div', { 'data-pg-note2': '' }, '0=黑，3=暗红，6=亮红，8=黄，10=深绿；锚点之间自动竖向渐变。'),
           h('div', { 'data-pg-stops': '' },
@@ -9124,6 +10803,30 @@ function GalleryTab2({ onScopeChanged }) {
     pgApplyTheme(next)
     api('/config', { uiTheme: next }).catch(() => {})
   }
+  /* ── 主界面 tips：进界面立刻来一条，之后每 15 秒一条 ──
+     单次进界面最多 20 条（点回去也只能在这 20 条里往回翻），下次进界面接着往下刷 */
+  const tipRef = React.useRef({ list: [], at: -1 })
+  const [, tipTick] = React.useState(0)
+  const bumpTip = () => tipTick((n) => n + 1)
+  React.useEffect(() => {
+    let shown = 0
+    const push = () => {
+      if (shown >= 20) return
+      shown += 1
+      const st = tipRef.current
+      st.list = st.list.concat([pgPickTip()]).slice(-20)
+      st.at = st.list.length - 1
+      bumpTip()
+    }
+    push()
+    const iv = window.setInterval(push, 10000)
+    return () => window.clearInterval(iv)
+  }, [])
+  const backTip = () => {
+    const st = tipRef.current
+    if (st.at > 0) { st.at -= 1; bumpTip() }
+  }
+  const tipNow = tipRef.current.at >= 0 ? tipRef.current.list[tipRef.current.at] : null
       const [toast, setToast] = React.useState(null)
       const toastSeq = React.useRef(0)
       const [rounds, setRounds] = React.useState(null)
@@ -9178,10 +10881,66 @@ function GalleryTab2({ onScopeChanged }) {
         return true
       }, [])
       const [settings, setSettings] = React.useState(false)
+      const [lookupOpen, setLookupOpen] = React.useState(false)
       const [updPrompt, setUpdPrompt] = React.useState(null)
+      const [updSheet, setUpdSheet] = React.useState(null) // 点顶栏版本号时直接开的「检查更新」弹窗
       const [updIntent, setUpdIntent] = React.useState(null)
       const [visionBlock, setVisionBlock] = React.useState(null) // 开跑前体检没过：没有任何真能看图的模型
       const [panelIntent, setPanelIntent] = React.useState('') // 跳设置页时直接落在哪一栏（'vision'）
+      /* 进主界面默认在页面最上方（宿主的页签会记住滚动位置，这里每次进来都归零） */
+      React.useEffect(() => {
+        /* 下一帧再归零一次：rAF 里此时布局已算完，宿主的自动滚动也落地了，按回去最稳 */
+        const raf1 = window.requestAnimationFrame(() => {
+          pgScrollMainToTop()
+          window.requestAnimationFrame(pgScrollMainToTop)
+        })
+        pgScrollMainToTop()
+        const t1 = window.setTimeout(pgScrollMainToTop, 260)
+        const t2 = window.setTimeout(pgScrollMainToTop, 900)
+        const t3 = window.setTimeout(pgScrollMainToTop, 1500)
+        const t4 = window.setTimeout(pgScrollMainToTop, 2400)
+        const unpin = pgPinMainTop(0)
+        return () => {
+          window.cancelAnimationFrame(raf1)
+          window.clearTimeout(t1)
+          window.clearTimeout(t2)
+          window.clearTimeout(t3)
+          window.clearTimeout(t4)
+          if (typeof unpin === 'function') unpin()
+        }
+      }, [view])
+      /* 顶栏版本号点一下 = 直接弹「检查更新」 */
+      React.useEffect(() => {
+        pgUpdateCheckHook = () => {
+          setUpdSheet({ loading: true })
+          api('/update?force=1').then((r) => {
+            if (!r || r.ok === false) throw new Error((r && r.error) || '检查更新失败')
+            setUpdSheet({ info: r })
+          }).catch((e) => setUpdSheet({ error: String(e?.message ?? e) }))
+        }
+        return () => { if (pgUpdateCheckHook) pgUpdateCheckHook = null }
+      }, [])
+      /* 会话视图是「每个会话一个 tab」：在本会话里开着画廊、又被切到别的会话时，
+         把本会话的视图偏好改回对话 —— 回来时直接落在对话，不再停在画廊。
+         用户自己点「对话」关掉的那种不留痕：那时宿主已经把偏好写成 chat 了。 */
+      React.useEffect(() => {
+        const PREFIX = 'dsh.conversation.'
+        const closeLeftOpen = () => {
+          try {
+            for (let i = 0; i < localStorage.length; i += 1) {
+              const k = localStorage.key(i)
+              if (!k || k.indexOf(PREFIX) !== 0) continue
+              let doc = null
+              try { doc = JSON.parse(localStorage.getItem(k) || 'null') } catch { doc = null }
+              if (!doc || typeof doc !== 'object' || doc.view !== 'pixiv-gallery') continue
+              doc.view = 'chat'
+              delete doc.viewRequest
+              localStorage.setItem(k, JSON.stringify(doc))
+            }
+          } catch { /* ignore */ }
+        }
+        return () => { setTimeout(closeLeftOpen, 400) }
+      }, [])
       /* 每天第一次进主界面查一次更新：有新版本才弹，一天只弹一次（不 force，吃服务端两分钟缓存） */
       React.useEffect(() => {
         const KEY = 'pixiv-gallery-updfirst'
@@ -9201,6 +10960,10 @@ function GalleryTab2({ onScopeChanged }) {
       const [msg, setMsg] = React.useState('')
       const [tone, setTone] = React.useState('')
       const [libCount, setLibCount] = React.useState(0)
+      const [diskGB, setDiskGB] = React.useState(null)
+      const [diskTodayMB, setDiskTodayMB] = React.useState(null)
+      const [diskTrashMB, setDiskTrashMB] = React.useState(null)
+      const [diskTrashItems, setDiskTrashItems] = React.useState([])
       const [targetTags, setTargetTags] = React.useState([])
       const [tagMap, setTagMap] = React.useState({})
       const [followedOnly, setFollowedOnly] = React.useState(false)
@@ -9407,7 +11170,7 @@ function GalleryTab2({ onScopeChanged }) {
         if (at < 0) {
           if (cards.length && (active === document.body || !scope.root.contains(active))) {
             e.preventDefault(); e.stopPropagation()
-            try { cards[0].focus({ preventScroll: false }) } catch { /* ignore */ }
+            try { cards[0].focus({ preventScroll: true }) } catch { /* ignore */ }
             if (typeof say === 'function') say(`从第一张卡片开始 · 再按 ${kbKeyText(kbKeyOf('nextWork'))} 看下一张、${kbKeyText(kbKeyOf('prevWork'))} 看上一张`, 'good', 2600)
             return
           }
@@ -9415,7 +11178,7 @@ function GalleryTab2({ onScopeChanged }) {
         if (at >= 0 && cards.length > 1) {
           e.preventDefault(); e.stopPropagation()
           const to = cards[at + (kbKeyHit(e, 'nextWork') ? 1 : -1)]
-          if (to) { try { to.focus({ preventScroll: false }) } catch { /* ignore */ } to.click() }
+          if (to) { try { to.focus({ preventScroll: true }) } catch { /* ignore */ } to.click() }
           else if (typeof say === 'function') say(kbKeyHit(e, 'nextWork') ? '已经是最后一张卡片了 · 到头啦' : '已经是第一张卡片了 · 到头啦', 'warn')
           return
         }
@@ -9776,10 +11539,11 @@ function GalleryTab2({ onScopeChanged }) {
              「第 1 轮走的是旧 AI 异步流程」，进度条也一直停在「正在等待 pixiv 搜索 / 作品详情（网络）」。 */
           /* 跑之前照旧弹一次分级提示（「这一轮会包含 R-18 / R-18G 作品」+ 设置页链接）：
              一次会话只弹一次，点「知道了，继续跑」就自己往下跑 —— 不再要求先去开开关。 */
-          if (presetUsed && !ratingGateShown && !(opts && opts.skipRatingGate)) {
+          if (presetUsed && !ratingGateShown && !(opts && opts.skipRatingGate) && !pgGateSeenToday()) {
             const gateNeed = await ratingGate(presetUsed.ratingMode)
             if (gateNeed) {
               ratingGateShown = true
+              pgMarkGateSeen()
               gateOpts.current = opts || {}
               gateResume.current = null
               setGateOpen(gateNeed)
@@ -10168,6 +11932,18 @@ function GalleryTab2({ onScopeChanged }) {
           await loadTrash()
         } catch (e) { say(String(e?.message ?? e), 'warn') }
       }
+      const restoreTrashToCard = async (items) => {
+        const list = (items || []).filter(Boolean)
+        if (!list.length) return
+        try {
+          const r = await api('/trash/restore', { items: list.map((t) => ({ round: t.round, id: t.id })) })
+          say(`已恢复 ${r?.restored || 0} 件到「恢复的作品」卡片`, 'good')
+          setTrashPick({})
+          setTrashArm('')
+          await loadTrash()
+          await loadAll()
+        } catch (e) { say(String(e?.message ?? e), 'warn') }
+      }
       const restoreRoundCard = async (round) => {
         try {
           await api('/round/restore', { round })
@@ -10199,6 +11975,20 @@ function GalleryTab2({ onScopeChanged }) {
         try { const r = await api('/library'); if (alive.current) setLibCount((r.works || []).length) }
         catch { /* ignore */ }
       }, [])
+      /* 磁盘占用由服务端扫盘算（60 秒缓存），前端只在进界面时取一次 */
+      const loadDisk = React.useCallback(async () => {
+        try {
+          const r = await api('/disk')
+          const b = Number(r?.bytes)
+          if (alive.current && Number.isFinite(b)) setDiskGB(b / 1e9)
+          const tb = Number(r?.todayBytes)
+          if (alive.current && Number.isFinite(tb)) setDiskTodayMB(tb / 1048576)
+          const trb = Number(r?.trashBytes)
+          if (alive.current && Number.isFinite(trb)) setDiskTrashMB(trb / 1048576)
+          if (alive.current && Array.isArray(r?.trashItems)) setDiskTrashItems(r.trashItems)
+        } catch { /* 老版本没有这个接口 */ }
+      }, [])
+      React.useEffect(() => { void loadDisk() }, [loadDisk])
       const loadCfg = React.useCallback(async () => {
         try {
           const r = await api('/config')
@@ -10379,10 +12169,7 @@ function GalleryTab2({ onScopeChanged }) {
       const roundPages = Math.max(1, Math.ceil(viewRounds.length / 15))
       const roundPg = Math.min(roundPage, roundPages)
       const pageRounds = viewRounds.slice((roundPg - 1) * 15, roundPg * 15)
-      const goRoundPage = (n) => {
-        setRoundPage(n)
-        window.setTimeout(() => { try { document.querySelector('[data-pg-grid]')?.scrollIntoView({ block: 'start', behavior: 'smooth' }) } catch { /* ignore */ } }, 40)
-      }
+      const goRoundPage = (n) => { setRoundPage(n); window.setTimeout(pgScrollMainToTop, 40) }
       /* ── 主界面卡片：长按拖动排序（只换位置，不动轮次数据） ── */
       const cardEls = () => Array.from(document.querySelectorAll('[data-pg-grid] [data-pg-card][data-round]'))
       const readCardLayout = () => {
@@ -10521,8 +12308,8 @@ function GalleryTab2({ onScopeChanged }) {
               h('div', { 'data-pg-brand': '' }, 'Pixiv 知心画廊'),
         h('button', {
           'data-pg-buildchip': '',
-          title: '当前界面版本（点一下整页重取）',
-          onClick: () => pgReload(),
+          title: '当前界面版本 · 点一下检查更新',
+          onClick: () => pgAskUpdateCheck(),
         }, 'v' + CLIENT_BUILD),
               (() => {
                 const st = String(lat?.state || 'idle')
@@ -10572,7 +12359,32 @@ function GalleryTab2({ onScopeChanged }) {
                 }, h('b', {}, label))
               })(),
               h('span', { 'data-pg-lagnote': '' }, '插件与网页的连接延迟较高，不一定能够及时响应，敬请谅解')),
-            h('div', { 'data-pg-sub': '' }, `已收集 ${rounds?.length ?? '…'} 轮 · 已评分 ${ratedCount} · 作品库 ${libCount} 件`)),
+            (() => {
+              const rs = Array.isArray(rounds) ? rounds : []
+              const cards = rs.length
+              const worksTotal = rs.reduce((a, r) => a + (Number(r.count) || 0) + (Number(r.removed) || 0), 0)
+              const doneCards = rs.filter((r) => r.status === 'rated').length
+              const ratedTimes = rs.reduce((a, r) => a + (Number(r.originalRated) || 0), 0)
+              const diskText = diskGB === null ? '—' : (diskGB >= 1 ? diskGB.toFixed(2) + ' GB' : Math.round(diskGB * 1024) + ' MB')
+              const todayText = diskTodayMB === null ? '—' : (diskTodayMB >= 10 ? Math.round(diskTodayMB) + ' MB' : diskTodayMB.toFixed(1) + ' MB')
+              const mbText = (mb) => (mb === null ? '—' : (mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : (mb >= 10 ? Math.round(mb) + ' MB' : mb.toFixed(1) + ' MB')))
+              const trashText = mbText(diskTrashMB)
+              const trashRows = Array.isArray(diskTrashItems) ? diskTrashItems : []
+              const trashLines = trashRows.slice(0, 8).map((x) => '· ' + String(x.title || x.id || '未命名') + '　' + mbText(Number(x.bytes || 0) / 1048576)).join('\n')
+              const trashTip = '待删除的文件＝回收站里的作品（缩略图 + 还留在硬盘上的原图）＋ 已删卡片还躺在硬盘上的缩略图，清掉能释放 ' + trashText
+                + '\n' + (trashRows.length ? trashLines + (trashRows.length > 8 ? '\n…… 共 ' + trashRows.length + ' 件' : '') : '（暂时没有待删除的文件）')
+              const cell = (tip, text) => h('span', { 'data-pg-subitem': '', 'data-pg-tip': tip }, text)
+              const sepEl = () => h('span', { 'data-pg-subsep': '' }, ' · ')
+              return h('div', { 'data-pg-sub': '' },
+                cell('收集到的卡片总数（不含你删掉的卡片）', '卡片 ' + cards), sepEl(),
+                cell('曾出现在卡片里的全部作品数，包含后来被移出、只剩评分记录的', '作品 ' + worksTotal), sepEl(),
+                cell('已评满分的卡片数量', '已完成 ' + doneCards + ' 张'), sepEl(),
+                cell('累计打分次数（删掉的作品也计入）', '评分 ' + ratedTimes + ' 次'), sepEl(),
+                cell('作品库里的作品数量', '在库 ' + libCount + ' 件'), sepEl(),
+                cell('作品库原图 + 轮次缩略图（含回收站里的文件）\n今天新落盘的原图：' + todayText, '磁盘 ' + diskText), sepEl(),
+                cell('今天新落盘的原图大小', '今日 ' + todayText), sepEl(),
+                cell(trashTip, '待删 ' + trashText))
+            })()),
           h('div', { 'data-pg-grow': '' }),
           h('div', { 'data-pg-themecap': '', title: uiTheme === 'light' ? '当前：浅色 / 白天' : '当前：深色' },
             h('button', {
@@ -10586,6 +12398,14 @@ function GalleryTab2({ onScopeChanged }) {
               onClick: () => pickTheme('dark'),
             }, '☾ 深色')),
           h('div', { 'data-pg-headbreak': '' }),
+          h('div', {
+            'data-pg-tipbar': '',
+            'data-kind': tipNow ? tipNow.kind : 'def',
+            title: '点一下看上一条（每 10 秒换一条；这条只占固定两行，不会顶动下面的卡片）',
+            onClick: backTip,
+          },
+            h('span', { 'data-pg-tiptag': '' }, tipNow ? PG_TIP_KIND[tipNow.kind] : 'tips'),
+            h('span', { 'data-pg-tiptext': '' }, tipNow ? tipNow.text : '')),
           h('div', { 'data-pg-headctl': '' },
           h('div', { 'data-pg-recent': '' },
             h('label', {}, '近期均分'),
@@ -10668,7 +12488,7 @@ function GalleryTab2({ onScopeChanged }) {
             onPick: (v) => { const d = Number(v) || 0; if (!d) { setFreshAsk(true); return } pickFresh(d) },
           }),
           h('div', { 'data-pg-tabs': '' },
-            h('button', { 'data-pg-tab': '', 'data-on': view === 'rounds' ? '' : undefined, onClick: () => setView('rounds') }, '已收集到的作品'),
+            h('button', { 'data-pg-tab': '', 'data-on': view === 'rounds' ? '' : undefined, onClick: () => setView('rounds') }, '卡片'),
             h('button', { 'data-pg-tab': '', 'data-on': view === 'library' ? '' : undefined, onClick: () => setView('library') }, '作品库')),
           h('div', { 'data-pg-swi': '', 'data-on': followedOnly ? '' : undefined, role: 'switch', tabIndex: 0, 'aria-checked': followedOnly ? 'true' : 'false', title: '左=刷全部，右=只刷已关注（写入刷Pixiv 下一轮配置）', onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); e.currentTarget.click() } }, onClick: async () => {
               const next = !followedOnly
@@ -10678,8 +12498,9 @@ function GalleryTab2({ onScopeChanged }) {
             h('span', { 'data-pg-swi-l': '' }, '刷全部'),
             h('i', { 'data-pg-swi-track': '' }, h('b', { 'data-pg-swi-knob': '' })),
             h('span', { 'data-pg-swi-r': '' }, '只刷已关注')),
-          h('button', { 'data-pg-btn': '', onClick: () => setSettings(true) }, '设置'),
-          h('button', { 'data-pg-btn': '', onClick: () => { loadAll(); say('已刷新', 'good') } }, '刷新'))),
+          h('button', { 'data-pg-btn': '', 'data-hue': 'green', 'data-pg-lookupbtn': '', onClick: () => setLookupOpen(true) }, '🌿 画廊检索'),
+          h('button', { 'data-pg-btn': '', 'data-hue': 'amber', onClick: () => setSettings(true) }, '设置'),
+          h('button', { 'data-pg-btn': '', 'data-hue': 'blue', onClick: () => { loadAll(); say('已刷新', 'good') } }, '刷新'))),
         runProg ? h('div', { 'data-pg-runbar': '', 'data-phase': runProg.phase, 'data-engine': runProg.engine || '', 'data-stage': runProg.stage || '' },
           h('div', { 'data-pg-runhead': '' },
             h('b', {},
@@ -10874,6 +12695,10 @@ function GalleryTab2({ onScopeChanged }) {
                     h('button', { 'data-pg-btn': '', onClick: () => setTrashPick(Object.fromEntries(trash.map((t) => [t.round + ':' + t.id, true]))) }, '全选'),
                     h('button', { 'data-pg-btn': '', onClick: () => setTrashPick({}) }, '清空'),
                     h('button', {
+                      'data-pg-btn': '', disabled: !Object.keys(trashPick).length,
+                      onClick: () => restoreTrashToCard(trash.filter((t) => trashPick[t.round + ':' + t.id])),
+                    }, '恢复选中'),
+                    h('button', {
                       'data-pg-btn': '', 'data-danger': '', disabled: !Object.keys(trashPick).length,
                       onClick: async () => {
                         if (trashArm !== 'batch') { setTrashArm('batch'); say('再点一次「彻底删除选中」就真的删掉，评分与标签会保留'); return }
@@ -10889,6 +12714,7 @@ function GalleryTab2({ onScopeChanged }) {
                       h('b', {}, t.title || t.id),
                       h('em', {}, (t.artist || '未知画师') + ' · #' + t.id),
                       h('span', { 'data-pg-note': '' }, (t.score != null ? String(t.score) + ' 分 · ' : '未评分 · ') + '移出 ' + fmt(t.removedAt))),
+                    h('button', { 'data-pg-btn': '', title: '恢复到「恢复的作品」卡片，可以单独重新评分', onClick: () => restoreTrashToCard([t]) }, '恢复'),
                     h('button', {
                       'data-pg-btn': '', 'data-danger': '',
                       onClick: async () => {
@@ -10931,12 +12757,13 @@ function GalleryTab2({ onScopeChanged }) {
                       const total = Number(r.total || r.count || 0)
                       const ratedN = Number(r.rated || 0)
                       const complete = total > 0 && ratedN >= total
+                      const isRestore = Boolean(r.restoreCard)
                       const fx = roundFx && roundFx.round === r.round ? roundFx : null
                       const autoMan = complete && r.manMode && !r.perfect && Number.isFinite(Number(r.finalAvg))
                         ? (Number(r.finalAvg) <= 6 ? 'low' : Number(r.finalAvg) <= 8 ? 'mid' : 'high') : null
                       return h('article', {
                         key: r.round, 'data-pg-card': '', tabIndex: 0, role: 'button', 'aria-label': `第 ${roundNo[r.round] || 1} 轮 ${r.title || ''}`,
-                        'data-round': r.round, 'data-pg-mode': r.uiStyle ? r.mode : undefined, 'data-pg-complete': complete ? '' : undefined, 'data-pg-masterpiece': (complete && r.perfect) ? '' : undefined,
+                        'data-round': r.round, 'data-pg-mode': r.uiStyle ? r.mode : undefined, 'data-pg-complete': (complete && !isRestore) ? '' : undefined, 'data-pg-masterpiece': (complete && r.perfect && !isRestore) ? '' : undefined, 'data-pg-restorecard': isRestore ? '' : undefined,
                         style: r.cardColor ? {
                           borderColor: r.cardColor,
                           boxShadow: '0 0 0 1px ' + hexA(r.cardColor, 0.42) + ', 0 0 18px ' + hexA(r.glowColor || r.cardColor, 0.38),
@@ -10947,22 +12774,26 @@ function GalleryTab2({ onScopeChanged }) {
                       },
                       h('div', { 'data-pg-cover': '' },
                         h(RoundCover, { roundId: r.round, id: r.headerId, title: r.headerTitle || r.title, artist: r.headerArtist }),
-                        complete && !fx ? h(DoneCorner, { perfect: Boolean(r.perfect), manTone: manDone[r.round] || autoMan }) : null,
-                        complete
-                          ? h(DualScore, { original: r.originalAvg, final: r.finalAvg, removed: r.removed })
-                          : h('span', { 'data-pg-partial-avg': '', title: '这一轮还没评完：这是已评分作品的平均分，既不是原始均分也不是最终均分，不会判定完美卡片' },
-                              `已评 ${ratedN}/${total} · 当前均分 ${avgText(Number(r.finalAvg ?? r.originalAvg ?? 0))}`),
-                        complete && r.perfect ? h('span', { 'data-pg-perfect': '', title: '完美卡片：两个评分都够高且差距很小' }, '❤️') : null),
+                        isRestore ? null : (complete && !fx ? h(DoneCorner, { perfect: Boolean(r.perfect), manTone: manDone[r.round] || autoMan }) : null),
+                        isRestore
+                          ? h('span', { 'data-pg-restorebadge': '', title: '从作品回收站恢复过来的作品：可以单独评分，卡片本身不算进度也不判完美' }, `恢复 ${total} 件`)
+                          : (complete
+                            ? h(DualScore, { original: r.originalAvg, final: r.finalAvg, removed: r.removed })
+                            : h('span', { 'data-pg-partial-avg': '', title: '这一轮还没评完：这是已评分作品的平均分，既不是原始均分也不是最终均分，不会判定完美卡片' },
+                                `已评 ${ratedN}/${total} · 当前均分 ${avgText(Number(r.finalAvg ?? r.originalAvg ?? 0))}`)),
+                        !isRestore && complete && r.perfect ? h('span', { 'data-pg-perfect': '', title: '完美卡片：两个评分都够高且差距很小' }, '❤️') : null),
                       h('div', { 'data-pg-card-body': '' },
-                        h('div', { 'data-pg-title': '' }, r.title),
-                        h('div', { 'data-pg-roundline': '' }, `第 ${roundNo[r.round] || 1} 轮 · 共 ${(r.count || 0) + (r.removed || 0)} 张`,
+                        h('div', { 'data-pg-title': '' }, isRestore ? '恢复的作品' : r.title),
+                        h('div', { 'data-pg-roundline': '' }, isRestore ? `回收站恢复 · 共 ${r.count || 0} 件` : `第 ${roundNo[r.round] || 1} 轮 · 共 ${(r.count || 0) + (r.removed || 0)} 张`,
                           h('span', {
                             'data-pg-modebadge': '', 'data-mode': r.uiStyle ? r.mode : 'custom',
                             style: r.cardColor ? { background: r.cardColor } : undefined,
                             title: '这一轮来自预设：' + (r.presetLabel || '自定义预设') + (r.uiStyle ? '' : '（升级前生成的旧卡片，只标注不改配色）'),
                           }, r.presetLabel || '自定义预设')), 
-                        h('div', { 'data-pg-meta': '' }, `${r.dateText || fmt(r.date)} · 已评分 ${r.rated || 0} · 未评分 ${Math.max(0, total - ratedN)} · 已下载 ${r.saved || 0}`),
-                        complete ? null : h(RateBar, { rated: ratedN, total })),
+                        h('div', { 'data-pg-meta': '' }, isRestore
+                          ? `进库或删除后自动离开这张卡片 · 已评分 ${r.rated || 0} 件`
+                          : `${r.dateText || fmt(r.date)} · 已评分 ${r.rated || 0} · 未评分 ${Math.max(0, total - ratedN)} · 已下载 ${r.saved || 0}`),
+                        (isRestore || complete) ? null : h(RateBar, { rated: ratedN, total })),
                       fx ? h(DoneFx, { perfect: fx.perfect, text: fx.text, tone: fx.tone }) : null)
                     })), viewRounds.length > 15 ? h(Pager, { page: roundPg, pages: roundPages, onChange: goRoundPage, total: viewRounds.length, pageSize: 15 }) : null]
                     : Empty({ text: rounds.length ? '没有符合筛选的轮次。' : '还没有任何一轮。' })))),
@@ -10992,7 +12823,7 @@ function GalleryTab2({ onScopeChanged }) {
               const cards = Array.from(document.querySelectorAll('[data-pg-card]'))
               const at = cards.findIndex((c) => c.getAttribute('data-round') === which)
               const to = at >= 0 ? cards[Math.min(at + 1, cards.length - 1)] : null
-              if (to) window.setTimeout(() => { try { to.focus({ preventScroll: false }) } catch { /* ignore */ } }, 80)
+              if (to) window.setTimeout(() => { try { to.focus({ preventScroll: true }) } catch { /* ignore */ } }, 80)
             } catch { /* ignore */ }
             if (info && info.completed) {
               let text = ''
@@ -11019,11 +12850,12 @@ function GalleryTab2({ onScopeChanged }) {
                   window.setTimeout(() => { if (alive.current) queueAch('oo') }, 3200)
                 }
               }
-              /* 臻于至善：任何预设都算（以前错写在 man 模式分支里，只有 man 才能解锁） */
+              /* 臻于至善：任何预设都算；「删除过」不分手动/自动（删掉的都记在 removedWorks 里），另加这张卡片至少 5 张作品 */
               if (Number.isFinite(sc) && sc >= 8.9) {
                 const row = (rounds || []).find((r) => r.round === which)
                 const doneCards = (rounds || []).filter((r) => Number(r.total) > 0 && Number(r.rated) >= Number(r.total)).length
-                if (doneCards >= 50 && Number(row && row.removed) > 0) queueAch('zenith')
+                const rowCount = Number((row && (row.count || row.total)) || 0)
+                if (doneCards >= 50 && Number(row && row.removed) > 0 && rowCount >= 5) queueAch('zenith')
               }
               window.setTimeout(() => { void checkAch() }, 900)
               setRoundFx({ round: which, perfect: Boolean(info.perfect), at: Date.now(), text, tone })
@@ -11087,7 +12919,7 @@ function GalleryTab2({ onScopeChanged }) {
             sumShow.halt ? h('div', { 'data-pg-msumnote': '', style: { color: '#fca5a5', marginTop: '6px' } },
               `停在第 ${sumShow.halt.at} / ${sumShow.halt.n} 轮：${sumShow.halt.why}。`,
               h('br'),
-              `已完成的 ${sumShow.halt.okCount} 轮都在「已收集到的作品」里；把开关打开、或确认 pixiv 设置页打得开之后，再点一次「跑多轮」补剩下的 ${sumShow.halt.n - sumShow.halt.okCount} 轮。`) : null,
+              `已完成的 ${sumShow.halt.okCount} 轮都在「卡片」里；把开关打开、或确认 pixiv 设置页打得开之后，再点一次「跑多轮」补剩下的 ${sumShow.halt.n - sumShow.halt.okCount} 轮。`) : null,
             sumShow.slow ? h('div', { 'data-pg-msumnote': '' }, '⚠️ 有轮次明显偏慢：关掉这张总结后，接着给你网络 / VPN / pixiv 限流的诊断和优化建议。') : null,
             h('div', { 'data-pg-achfoot': '' },
               h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { closeSum(); setView('rounds'); setCollect('all'); setQ(''); setRoundPage(1); try { window.scrollTo(0, 0) } catch { /* ignore */ } } }, '去看看新卡片')))) : null,
@@ -11095,7 +12927,7 @@ function GalleryTab2({ onScopeChanged }) {
           h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation() },
             h('div', { 'data-pg-gatetitle': '' }, '跑多轮：一次跑 ' + multiAsk.n + ' 轮'),
             h('div', { 'data-pg-gatenote': '' },
-              h('div', {}, '会连续跑 ' + multiAsk.n + ' 轮，每轮沿用现在的预设「' + (presetName || '当前设置') + '」和严格度，各自产出一批卡片——前面几轮都会留在「已收集到的作品」里，不会互相覆盖。'),
+              h('div', {}, '会连续跑 ' + multiAsk.n + ' 轮，每轮沿用现在的预设「' + (presetName || '当前设置') + '」和严格度，各自产出一批卡片——前面几轮都会留在「卡片」里，不会互相覆盖。'),
               h('div', { style: { marginTop: '7px' } }, '⚠️ token 会成倍增加：每轮都要 AI 逐张看图、打分精挑；网络流量同理（作品详情 + 缩略图，原图按需下载）。'),
               h('div', { style: { marginTop: '7px' } }, '⚠️ pixiv 对短时间高频请求有限流：连着跑 ' + multiAsk.n + ' 轮更容易触发，后面几轮可能变慢、空结果、甚至暂时抓不到图；轮数越多，总等待时间不是线性增加，主要卡在每轮的搜索和看图。'),
               h('div', { style: { marginTop: '7px' } }, '建议一次 2–5 轮；想更多就分批跑（隔几分钟），或先去设置里把每轮张数调小。')),
@@ -11301,7 +13133,7 @@ function GalleryTab2({ onScopeChanged }) {
               style: { paddingTop: '0', fontSize: '12.5px' },
             }, '就算开好了，pixiv 那边也要几分钟才认（有时候更久）。等着的时候可以先跑「谁不喜欢白丝萝莉（麻麻）❤️」——那套只刷全年龄，不吃这个开关。'),
             gateBatchRef.current ? h('div', { 'data-pg-gatenote': '', style: { marginTop: '8px' } },
-              '这一批已经停在这里：后面的 ' + (gateBatchRef.current.n - gateBatchRef.current.i + 1) + ' 轮不会自己往下走，已经跑完的 ' + gateBatchRef.current.okCount + ' 轮都保留在「已收集到的作品」里。') : null,
+              '这一批已经停在这里：后面的 ' + (gateBatchRef.current.n - gateBatchRef.current.i + 1) + ' 轮不会自己往下走，已经跑完的 ' + gateBatchRef.current.okCount + ' 轮都保留在「卡片」里。') : null,
             h('div', { 'data-pg-achfoot': '' },
               gateBatchRef.current ? h('button', { 'data-pg-btn': '', style: { marginRight: '8px' }, onClick: () => { void stopBatchWithSummary(gateOpen) } }, '先不跑（看结算）') : null,
               h('button', {
@@ -11332,6 +13164,12 @@ function GalleryTab2({ onScopeChanged }) {
           /* 「去设置识图模型」：直接开设置并落到「视觉后端」那一栏，不让主人自己去翻 */
           onJump: () => { setVisionBlock(null); setPanelIntent('vision'); setSettings(true) },
         }) : null,
+        updSheet ? h(UpdateSheet, {
+          data: updSheet,
+          onClose: () => setUpdSheet(null),
+          onRestart: () => { setUpdSheet(null); void pgRestartDsh() },
+        }) : null,
+        lookupOpen ? h(LookupSheet, { onClose: () => setLookupOpen(false), say, theme: uiTheme }) : null,
         settings ? h(Settings2, {
           onClose: () => { setSettings(false); setUpdIntent(null); setPanelIntent('') },
           onSaved: () => { onScopeChanged?.(); loadAll() },
@@ -11562,6 +13400,7 @@ function GalleryTab2({ onScopeChanged }) {
 [data-pg-theme="light"] [data-pg-devnote] b{color:#3d4250;}
 /* 作品详情页：背景白半透 + 深字 */
 [data-pg-theme="light"] [data-pg-detailstage]{background:rgba(255,255,255,.55);}
+[data-pg-theme="light"] [data-pg-work]:focus,[data-pg-theme="light"] [data-pg-work]:focus-visible{outline-color:#0ea5e9;}
 [data-pg-theme="light"] [data-pg-detailpos]{color:#1b1e26;}
 [data-pg-theme="light"] [data-pg-detailkeys]{color:rgba(27,30,38,.66);}
 /* 打分按钮（ScorePicker 交互）→ 白底深字，选中蓝色 */
@@ -11874,7 +13713,17 @@ function GalleryTab2({ onScopeChanged }) {
 [data-pg-theme="light"] [data-pg-kbmenu] button{color:#1b1e26;}
 [data-pg-theme="light"] [data-pg-pillmenu]{background:#ffffff;border-color:rgba(0,0,0,.14);box-shadow:0 12px 30px rgba(0,0,0,.14);}
 [data-pg-theme="light"] [data-pg-pill]{background:#ffffff;border-color:rgba(0,0,0,.16);box-shadow:0 1px 2px rgba(0,0,0,.04);}
-[data-pg-theme="light"] [data-pg-sheet]{color:#1b1e26;}
+[data-pg-theme="light"] [data-pg-sheet]{color:#1b1e26;background:#ffffff;border-color:rgba(0,0,0,.14);}
+[data-pg-theme="light"] [data-pg-sheet] [data-pg-note2]{color:#3d4250;}
+[data-pg-upd]{--pg-upd-text:#e6ecf6;}
+[data-pg-upd] [data-pg-title]{color:#f2f6fc;}
+[data-pg-upd] [data-pg-note2]{color:#c3ccdb;}
+[data-pg-upd] [data-pg-updnotes]{background:rgba(148,163,184,.14);border:1px solid rgba(148,163,184,.22);}
+[data-pg-theme="light"] [data-pg-upd]{--pg-upd-text:#1b1e26;}
+[data-pg-theme="light"] [data-pg-upd] [data-pg-title]{color:#111827;}
+[data-pg-theme="light"] [data-pg-upd] [data-pg-note2]{color:#3d4250;}
+[data-pg-theme="light"] [data-pg-upd] [data-pg-updnotes]{background:rgba(59,130,246,.07);border-color:rgba(0,0,0,.10);}
+[data-pg-theme="light"] [data-pg-upd] [data-pg-link]{color:#1d4ed8;}
 [data-pg-theme="light"] [data-pg-xphub]{color:#be185d;}
 [data-pg-theme="light"] [data-pg-xphub]{color:#be185d;}
 [data-pg-theme="light"] [data-pg-xphub]{color:#be185d;}
@@ -11934,6 +13783,22 @@ function GalleryTab2({ onScopeChanged }) {
 [data-pg-theme="light"] [data-pg-swi][data-on] [data-pg-swi-track]{background:#2563eb;}
 [data-pg-theme="light"] [data-pg-swi-knob]{background:#ffffff;box-shadow:0 1px 2px rgba(0,0,0,.28);}
 [data-pg-theme="light"] [data-pg-head]{border-bottom-color:rgba(0,0,0,.10);}
+/* 顶栏配色浅色版：淡一些、字更深 */
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="green"]{background:rgba(16,185,129,.10);border-color:rgba(5,150,105,.38);color:#05664a;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="green"]:hover{background:rgba(16,185,129,.18);border-color:rgba(5,150,105,.6);color:#04543d;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="amber"]{background:rgba(245,158,11,.12);border-color:rgba(180,83,9,.38);color:#92400e;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="amber"]:hover{background:rgba(245,158,11,.2);border-color:rgba(180,83,9,.6);color:#78350f;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="blue"]{background:rgba(56,189,248,.12);border-color:rgba(2,132,199,.38);color:#075985;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-btn][data-hue="blue"]:hover{background:rgba(56,189,248,.2);border-color:rgba(2,132,199,.6);color:#0c4a6e;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-tabs]{background:rgba(0,0,0,.05);}
+[data-pg-theme="light"] [data-pg-head] [data-pg-tab][data-on]{background:linear-gradient(180deg,#fdba74,#fb923c) !important;color:#ffffff !important;border:1px solid rgba(234,88,12,.55) !important;box-shadow:0 2px 8px rgba(249,115,22,.28);text-shadow:0 1px 2px rgba(154,52,18,.45);}
+[data-pg-theme="light"] [data-pg-head] [data-pg-strictpill]{background:linear-gradient(180deg,rgba(59,130,246,.14),rgba(59,130,246,.06)) !important;border-color:rgba(37,99,235,.45) !important;box-shadow:0 1px 5px rgba(37,99,235,.14),inset 0 1px 0 rgba(255,255,255,.6);}
+[data-pg-theme="light"] [data-pg-head] [data-pg-strictpill] [data-pg-pillbtn]{color:#1d4ed8;font-weight:800;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-freshpill]{background:linear-gradient(180deg,rgba(251,191,36,.20),rgba(245,158,11,.10)) !important;border-color:rgba(217,119,6,.45) !important;box-shadow:0 1px 5px rgba(217,119,6,.14),inset 0 1px 0 rgba(255,255,255,.6);}
+[data-pg-theme="light"] [data-pg-head] [data-pg-freshpill] [data-pg-pillbtn]{color:#92400e;font-weight:800;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-swi]{border-color:rgba(5,150,105,.34);background:#ffffff;}
+[data-pg-theme="light"] [data-pg-head] [data-pg-swi][data-on]{border-color:rgba(5,150,105,.6);background:rgba(16,185,129,.10);}
+
 [data-pg-theme="light"] [data-pg-tagrow]{border-bottom-color:rgba(0,0,0,.08);}
 [data-pg-theme="light"] [data-pg-achann]{background:#f3f5f8;color:#1b1e26;}
 /* 兜底：浅色下这些文字一律纯净，不许发光/渐变底 */
@@ -12046,9 +13911,109 @@ function GalleryTab2({ onScopeChanged }) {
         let offPanel = null
         let offMore = null
         let offMain = null
+        // 侧栏条目右键菜单：收起画廊侧栏（写回 config.showInSidebar=false）
+        let pgSideMenuEl = null
+        const pgSideMenuClose = () => { try { pgSideMenuEl?.remove() } catch { /* ignore */ } pgSideMenuEl = null }
+        const pgSideMenuOpen = (ev, items) => {
+          try {
+            ev.preventDefault(); ev.stopPropagation()
+            pgSideMenuClose()
+            const dark = document.documentElement?.dataset?.theme !== 'light' && !document.querySelector('[data-pg-theme="light"]')
+            const box = document.createElement('div')
+            box.setAttribute('data-pg-sidemenu', '')
+            if (!dark) box.setAttribute('data-pg-theme', 'light')
+            const x = Math.max(8, Math.min(Number(ev.clientX) || 0, (window.innerWidth || 800) - 210))
+            const y = Math.max(8, Math.min(Number(ev.clientY) || 0, (window.innerHeight || 600) - 90))
+            box.style.left = x + 'px'; box.style.top = y + 'px'
+            for (const it of items) {
+              if (it.hint) { const h2 = document.createElement('div'); h2.setAttribute('data-pg-sidemenuhint', ''); h2.textContent = it.hint; box.appendChild(h2); continue }
+              const b = document.createElement('button')
+              b.textContent = it.label
+              b.addEventListener('click', (e) => { e.stopPropagation(); pgSideMenuClose(); try { it.run?.() } catch { /* ignore */ } })
+              box.appendChild(b)
+            }
+            document.body.appendChild(box)
+            pgSideMenuEl = box
+            const away = (e) => { if (!box.contains(e.target)) { pgSideMenuClose(); off() } }
+            const esc = (e) => { if (e.key === 'Escape') { pgSideMenuClose(); off() } }
+            const off = () => { document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', esc, true) }
+            setTimeout(() => { document.addEventListener('pointerdown', away, true); document.addEventListener('keydown', esc, true) }, 0)
+          } catch { /* ignore */ }
+        }
+        const pgHideSidebar = async () => {
+          try {
+            await api('/config', { showInSidebar: false, collapseToMore: false })
+            SHELL_RELOAD?.({ showInSidebar: false, collapseToMore: false, showInConversation: true })
+            reloadToast('已收起「知心画廊」侧栏；要放出来可以去设置界面再调', true)
+          } catch (e) { reloadToast('收起失败：' + String(e?.message ?? e), false) }
+        }
+        const pgSideRowOf = (ic) => {
+          let el = ic
+          for (let i = 0; i < 8 && el; i += 1) {
+            const r = el.getBoundingClientRect()
+            if (r && r.width >= 110) return el
+            el = el.parentElement
+          }
+          return ic.closest('button, [role="button"], a') || ic
+        }
+        // 只在「装着这个图标的那一行」里才算命中：先看指针是否落在图标同一行的高度带，
+        // 再从事件目标往上找「装着这个图标、且宽度像条目的容器」。
+        const pgSideRowHit = (ev) => {
+          try {
+            const x = Number(ev?.clientX) || 0
+            const y = Number(ev?.clientY) || 0
+            const t = ev?.target instanceof Element ? ev.target : null
+            for (const ic of document.querySelectorAll('[data-pg-sideicon]')) {
+              const ir = ic.getBoundingClientRect()
+              if (!ir.width) continue
+              if (y < ir.top - 6 || y > ir.bottom + 6) continue
+              if (x < ir.left - 10) continue
+              let el = t
+              for (let i = 0; i < 6 && el; i += 1, el = el.parentElement) {
+                if (!el.contains(ic)) continue
+                const r = el.getBoundingClientRect()
+                if (r && r.width > 0 && r.width <= 420 && x <= r.right + 2) return true
+                break
+              }
+            }
+            return false
+          } catch { return false }
+        }
+        if (typeof document !== 'undefined' && !window.__pgSideCtxBound) {
+          window.__pgSideCtxBound = true
+          let pgSideCtxAt = 0
+          const pgSideCtxFire = (ev) => {
+            const now = Date.now()
+            if (now - pgSideCtxAt < 200) return
+            pgSideCtxAt = now
+            pgSideMenuOpen(ev, pgSideMenuItems())
+          }
+          // 右键按下那一刻就先开菜单：不依赖宿主是否吞掉 contextmenu
+          document.addEventListener('pointerdown', (ev) => {
+            if (ev.button !== 2) return
+            if (!pgSideRowHit(ev)) return
+            ev.preventDefault()
+            pgSideCtxFire(ev)
+          }, true)
+          document.addEventListener('mousedown', (ev) => {
+            if (ev.button !== 2) return
+            if (!pgSideRowHit(ev)) return
+            pgSideCtxFire(ev)
+          }, true)
+          document.addEventListener('contextmenu', (ev) => {
+            if (!pgSideRowHit(ev)) return
+            ev.preventDefault()
+            pgSideCtxFire(ev)
+          }, true)
+        }
+        const pgSideMenuItems = () => [
+          { hint: 'Pixiv 知心画廊' },
+          { label: '收起侧栏（放出来去设置界面）', run: () => { void pgHideSidebar() } },
+        ]
         const SidebarIcon = () => h('button', {
           'data-pg-sideicon': '',
-          title: 'Pixiv 知心画廊',
+          title: 'Pixiv 知心画廊（右键可收起）',
+          onContextMenu: (ev) => pgSideMenuOpen(ev, pgSideMenuItems()),
           onClick: () => { try { layoutSvc?.selectPanel?.('pixiv-gallery') } catch { /* ignore */ } },
         }, h('span', {}, '画'))
         const mountShell = (cfg = {}) => {
@@ -12062,7 +14027,8 @@ function GalleryTab2({ onScopeChanged }) {
               offMore = slots.inject('sidebar.panellist.actions', () => slots.register({
                 name: 'sidebar.panellist.actions', id: 'pixiv-gallery-more', order: 6, label: '知心画廊',
               }, () => h('button', {
-                'data-pg-sideicon': '', title: 'Pixiv 知心画廊',
+                'data-pg-sideicon': '', title: 'Pixiv 知心画廊（右键可收起）',
+                onContextMenu: (ev) => pgSideMenuOpen(ev, pgSideMenuItems()),
                 onClick: () => { try { layoutSvc?.selectPanel?.('pixiv-gallery') } catch { /* ignore */ } },
               }, h('span', {}, '画'), '知心画廊')))
             } catch { /* ignore */ }

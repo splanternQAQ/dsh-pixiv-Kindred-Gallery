@@ -1,63 +1,185 @@
-# Pixiv 知心画廊（dsh-pixiv-Kindred-Gallery）
+<div align="center">
 
-DeepSeek Harness 插件：**跑一轮 / 评分 / 作品库 / 口味画像**。它自己不算图——搜图、看图、下载都交给「刷Pixiv」（dsh-pixiv-scroll），画廊负责把结果摆成卡片、让你打分、学你的口味。
+# Pixiv 知心画廊
 
-作者：春灯笼　·　GitHub：[@splanternQAQ](https://github.com/splanternQAQ)
+**给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-## 安装（一条命令）
+![version](https://img.shields.io/badge/version-1.5.0-ff69b4?style=flat-square)
+![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
+![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
+![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)
+![telemetry](https://img.shields.io/badge/telemetry-none-2ea043?style=flat-square)
+![local](https://img.shields.io/badge/data-只存本机-8b5cf6?style=flat-square)
 
-在 PowerShell 里粘这一行：
+它自己不算图：搜图、看图、下载都交给 [刷Pixiv](https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery)（`dsh-pixiv-scroll`）；画廊负责把结果摆成卡片、让你打分、记住你的口味。
+
+[快速开始](#快速开始) · [它做什么](#它做什么) · [安全与权限](#安全与权限先读这一段) · [数据在哪](#数据放在哪) · [常见问题](#常见问题) · [更新日志](#更新日志倒序)
+
+</div>
+
+---
+
+## 目录
+
+- [它做什么](#它做什么)
+- [快速开始](#快速开始)
+- [安装细节](#安装细节)
+- [安全与权限（先读这一段）](#安全与权限先读这一段)
+- [数据放在哪](#数据放在哪)
+- [看图通路（视觉后端）](#看图通路视觉后端)
+- [跑一轮的三个开关](#跑一轮的三个开关)
+- [常见问题](#常见问题)
+- [致谢](#致谢)
+- [作者的话](#作者的话)
+- [许可](#许可)
+- [更新日志（倒序）](#更新日志倒序)
+
+## 它做什么
+
+| 能力 | 说明 |
+| --- | --- |
+| **跑一轮** | 按目标标签 / 喜爱标签 / 分级与阈值去 pixiv 抓一批候选，AI 精挑出卡片；支持「跑多轮」整批额度 |
+| **打分** | 0–10 分，低分自动进回收站；原始均分与当前均分分开记，删掉的作品也留在原始均分里 |
+| **作品库** | 已下载作品按 `作者/标题_id` 落盘，支持收藏夹（三档置顶）、标签筛选、纯图模式、翻页、一键打包 7z |
+| **口味画像** | 从高分作品抽样算画风与标签权重，告诉你喜欢什么、该避开什么，越用越准 |
+| **画廊检索** | 顶栏聊天框：问用法、粘 pid 或链接查作品、直接收进作品库；说要改设置它真的会改 |
+| **分享** | 右键复制图片、一键复制本页文件进 QQ、打包本页 7z（自带密码，1 小时后自动删） |
+
+> 只装画廊也能开页面、改设置、看历史卡片；但**跑不出新图、下载与点头都不可用**——那些能力属于刷Pixiv。
+
+## 快速开始
+
+**前置**：Windows 10/11 + 已经装好并能启动的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
+
+1. **装插件本体**（两步，先看再执行）：
+
+   ```powershell
+   $s = irm https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery/raw/main/install.ps1
+   $s        # 第 1 步：只打印，先自己扫一眼
+   $s | iex  # 第 2 步：确认没问题，再执行
+   ```
+
+2. **重启 DSH** → 标签栏出现「知心画廊」。
+
+3. **装搭档刷Pixiv**：画廊 → 设置 → 下载相关顶部点 **一键安装**（拉 `dsh-pixiv-scroll` 1.1.14）→ 再重启一次。
+
+4. **登录 pixiv**：到「刷Pixiv」里登录（token 或账号密码）。之后回画廊就能跑一轮了。
+
+全程普通权限，不弹 UAC，不需要管理员。
+
+## 安装细节
+
+### 装到哪里
+
+| 内容 | 默认位置 |
+| --- | --- |
+| 插件代码 | `%USERPROFILE%\.dsh\plugins\dsh-pixiv-Kindred-Gallery`（**C 盘，和画廊数据同一个 `.dsh` 下**） |
+| 画廊数据 | `%USERPROFILE%\.dsh\dsh-pixiv-Kindred-Gallery`（评分 / 偏好 / 缩略图 / 轮次） |
+| 原图 | 跟刷Pixiv 走：`%USERPROFILE%\.dsh\pixiv-duty\Download\all_works\{画师}\{标题}_{id}` |
+
+老版本会优先装到 `D:\Deepseek_Plugins`（有 D 盘的话）；从 1.3.5 后的这版安装脚本起，默认统一到 C 盘的 `~\.dsh\plugins`，与数据同处一个 `.dsh` 下，卸载时只删这一处就干净了。早先装在 D 盘的不用动，脚本重跑会就地覆盖同一路径。
+
+### 想装到别处
+
+```powershell
+$env:PG_INSTALL_DIR = 'C:\MyPlugins'
+$s | iex
+```
+
+（PowerShell 7 也可以先存盘再传参：`pwsh -File .\install.ps1 -InstallDir 'C:\MyPlugins'`）
+
+### 脚本会做什么
+
+下载仓库 zip → 解压到安装目录（旧目录改名 `.bak-时间` 留着）→ 写进 profile 的 `dependencies` 与 `dsh.profile.bundles`（改前存 `.bak`）→ 在 `node_modules` 建立指向安装目录的目录联接。
+
+每次运行都会打印**下载地址 + zip 字节数 + sha256**，可以拿去和别人比。
+
+<details><summary>就想一条命令（老写法，仍然可用）</summary>
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery/raw/main/install.ps1 | iex"
 ```
 
-脚本会：下载仓库 zip → 放到 `D:/Deepseek_Plugins/dsh-pixiv-Kindred-Gallery` → 写进 profile 的 `dependencies` 与 `dsh.profile.bundles` → 在 `node_modules` 建联接（旧目录自动备份）。
+</details>
 
-**装完重启 DSH**，标签栏就会出现「知心画廊」。
+<details><summary>手动安装（不用脚本，自己做那三件事）</summary>
 
-接着装它的搭档：打开「知心画廊」→ 设置 → 下载相关顶部点 **一键安装**（拉 1.1.14 的刷Pixiv）→ 再重启一次 → 到「刷Pixiv」登录 pixiv 账号（token 或账号密码）。
-
-> 只装画廊也能开页面、改设置、看历史卡片；但**跑不出新图、下载/点头不可用**——那些能力属于刷Pixiv。
->
-> npm 包（`dsh plugin add dsh-pixiv-kindred-gallery`）还没发布，目前请用上面这条命令。
-
-### 已经在用、界面整块空白 / 版本对但行为是旧的？（重跑一次上面那条命令）
-
-1.2.9 期间修过一次「主界面整块空白」，那几次修补没改版本号，只看版本号的更新提示认不出来。遇到这种情况**直接重跑安装命令**：脚本会拉仓库当前代码覆盖安装，旧插件目录自动改名成 `.bak-时间` 留着。装完重启 DSH 就好了。
-
-设置页「检查更新」旁边的 **「重装最新版」** 是同一件事（版本号相同也照样装），界面还能用的时候点它更快。
-
-**您的数据不会被动到。** 评分、偏好、头图、轮次记录都在这里：
-
-```
-%USERPROFILE%\.dsh\dsh-pixiv-Kindred-Gallery\      ← gallery.json / preferences.json / thumbs / picks
-```
-
-这是插件家目录，**不在插件源码目录里**；重装只会覆盖 `D:/Deepseek_Plugins/dsh-pixiv-Kindred-Gallery`（代码），上一行那个目录既不删也不改。保险起见，脚本重装时还会检查旧插件目录里有没有 `gallery.json`、`preferences.json`、`picks/`、`thumbs/`，有就原样搬回新目录。
-
-<details><summary>离线安装（没有 npm / 想用源码时）</summary>
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery/raw/main/install.ps1 | iex"
-```
-
-脚本会把仓库放到 `D:/Deepseek_Plugins/dsh-pixiv-Kindred-Gallery`、写进 profile 的 `dependencies` 与 `dsh.profile.bundles`、并在 `node_modules` 建联接。
-
-也可以手动做同样三件事：
-
-1. 下载本仓库 zip 解压到 `D:/Deepseek_Plugins/dsh-pixiv-Kindred-Gallery`；
-2. 编辑 `profiles/desktop/package.json`：`dependencies` 加 `"dsh-pixiv-kindred-gallery": "link:D:/Deepseek_Plugins/dsh-pixiv-Kindred-Gallery"`，`dsh.profile.bundles` 数组加 `"dsh-pixiv-kindred-gallery"`；
-3. 在 `profiles/desktop/node_modules` 里建联接：`mklink /J dsh-pixiv-kindred-gallery D:\Deepseek_Plugins\dsh-pixiv-Kindred-Gallery`；
+1. 下载本仓库 zip，解压到 `%USERPROFILE%\.dsh\plugins\dsh-pixiv-Kindred-Gallery`；
+2. 编辑 `profiles/desktop/package.json`：`dependencies` 加 `"dsh-pixiv-kindred-gallery": "link:C:/Users/<你>/.dsh/plugins/dsh-pixiv-Kindred-Gallery"`，`dsh.profile.bundles` 数组加 `"dsh-pixiv-kindred-gallery"`；
+3. 在 `profiles/desktop/node_modules` 里建联接：`mklink /J dsh-pixiv-kindred-gallery "%USERPROFILE%\.dsh\plugins\dsh-pixiv-Kindred-Gallery"`；
 4. 重启 DSH。
 
 </details>
 
+### 重装 / 修「界面整块空白」
+
+旧版本出现过「主界面整块空白」的 bug，那几次修补没改版本号，只看版本号的更新提示认不出来。遇到 **白屏、或版本号对但行为是旧的**，直接重跑安装命令（或点设置里「检查更新」旁的 **重装最新版**）：脚本会拉仓库当前代码覆盖，旧目录改名 `.bak-时间` 留着，重启 DSH 即好。
+
+**数据不会被动到**：`~/.dsh/dsh-pixiv-Kindred-Gallery` 既不在源码目录里，也不会被覆盖；脚本重装时还会检查旧目录里有没有 `gallery.json`、`preferences.json`、`picks/`、`thumbs/`，有就原样搬回。
+
+### 卸载
+
+删三处即可：
+
+1. profile `package.json` 里 `dependencies` 与 `dsh.profile.bundles` 的那两条；
+2. `profiles/<profile>/node_modules/dsh-pixiv-kindred-gallery` 这条目录联接；
+3. 安装目录本身。
+
+数据目录 `~/.dsh/dsh-pixiv-Kindred-Gallery` 可以留着，下次装回来评分与偏好都还在。
+
+## 安全与权限（先读这一段）
+
+**一句话**：这是本地插件——评分、偏好、收藏、下载记录全部留在你自己的硬盘上，只跟 pixiv 和你自己配置的模型端点通信，没有任何统计埋点。它会写文件、也会调用 PowerShell，因为「存图到硬盘」「把文件放进剪贴板」这两件事没有别的方式，不是为了别的目的。
+
+### 它会碰哪些东西
+
+| 位置 | 做什么 | 权限 |
+| --- | --- | --- |
+| `~/.dsh/profiles/<profile>/package.json` | 安装时把插件注册进 DSH（改前自动存 `.bak`） | 普通用户写 |
+| `~/.dsh/profiles/<profile>/node_modules/dsh-pixiv-kindred-gallery` | 一条指向安装目录的目录联接（Junction），不是复制 | 普通用户写 |
+| 安装目录（默认 `~/.dsh/plugins/dsh-pixiv-Kindred-Gallery`） | 插件代码本身；重装时旧目录改名 `.bak-时间` 保留 | 普通用户写 |
+| `~/.dsh/dsh-pixiv-Kindred-Gallery` | 评分、偏好、轮次、缩略图、口味画像 | 普通用户读写 |
+| `~/.dsh/pixiv-duty`（刷Pixiv 的数据） | 读它的 `config.json`，读写下载目录与缓存 | 普通用户读写 |
+| 出网 `pixiv.net` / `i.pximg.net` | 搜索、看图、下载时 | HTTPS |
+| 出网：你自己配置的模型端点（本机 `127.0.0.1:8326` 或你填的地址） | 「精挑」与画风分析时 | HTTPS |
+| 出网 `github.com` / `codeload.github.com` | **只在安装 / 检查更新时**取 zip | HTTPS |
+
+**明确不做**：不读浏览器 Cookie 与保存的密码、不读系统凭据、不装服务、不写注册表、不设开机自启、不请求管理员权限（不弹 UAC）、不把任何数据上传给第三方。
+
+### 为什么有人说「权限太多」
+
+DSH 插件与宿主 DSH **跑在同一个进程里**，插件本身没有独立沙箱——这是 DSH 的插件形态，不是本插件的设计。于是「一个插件能读写文件」在扫描器、审计、或者别人的口口相传里，天然就等于高权限。本插件对文件系统的需求就是上表那几行，而且每一条都是非做不可的：不写文件就存不下作品库，不读刷Pixiv 的配置就找不到已经下载的原图。
+
+### 为什么说「PowerShell 安装不安全」
+
+因为 `irm ... | iex` 是「下载远端脚本、直接执行」的经典写法，被滥用的案例太多，任何长成这样的命令都会被当成可疑。这里它实际做的事只有四件：下载仓库 zip、解压到安装目录、往 profile 的 `package.json` 加一条 `link:` 依赖与一个 bundles 名字、建一条目录联接。脚本 7KB 左右，没有 `Invoke-Expression`、没有 `Start-Process`、不写注册表、不建计划任务，可以逐行读完：<https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery/blob/main/install.ps1>。
+
+这也是本仓库把「一条命令」改成**两步**（先 `$s` 打印、再 `$s | iex`）的原因：你可以先看见它到底写了什么。
+
+### 为什么运行时也会拉起 powershell.exe
+
+三件事，都是 Windows 上「只能这么做」的操作：
+
+1. **把文件放进剪贴板** —— 图片 / 压缩包要以「文件」形式粘进 QQ、微信，Windows 只认 `System.Windows.Forms.Clipboard::SetFileDropList`，没有跨进程替代品；
+2. **打开 / 定位作品目录** —— 在资源管理器里选中你刚下载的那一件；
+3. **打包 7z** —— 调随插件附带的 `tools/7zr.exe`（7-Zip 官方精简版），不装系统 7-Zip、不改文件关联。
+
+这三类调用都不联网、不读隐私数据，只操作你已经下载到本机的那几件作品。
+
+### 想自己核对
+
+- 安装脚本每次运行都会打印**下载地址 + zip 字节数 + sha256**；
+- 安装只改三处：profile 的 `package.json`（有 `.bak` 备份）、`node_modules` 里那条目录联接、安装目录本身；
+- 更新只从仓库拉代码，`/update` 的返回里也带着版本号与提交时间；觉得可疑就把本页命令再读一遍。
+
 ## 数据放在哪
 
-- 插件源码：本仓库；
-- 画廊数据（gallery.json / thumbs / pagecache / 下载）：`~/.dsh/dsh-pixiv-Kindred-Gallery`；作品库与原图都在它下面的 `Download\illust\{画师}\{标题}_{id}`，不再落到刷Pixiv 的目录；
-- 刷Pixiv 数据：`~/.dsh/pixiv-duty`。
+- **插件代码（安装目录）**：`%USERPROFILE%\.dsh\plugins\dsh-pixiv-Kindred-Gallery`（老版本可能仍在 `D:\Deepseek_Plugins\dsh-pixiv-Kindred-Gallery`）。装到哪看 profile `package.json` 里 `dependencies` 的那条 `link:`；
+- **画廊数据**：`%USERPROFILE%\.dsh\dsh-pixiv-Kindred-Gallery`（`gallery.json` / `preferences.json` / `taste.json` / `thumbs` / `picks`）；
+- **原图与下载**：跟着**刷Pixiv** 走，默认 `%USERPROFILE%\.dsh\pixiv-duty\Download\all_works\{画师}\{标题}_{id}`，目录模板在刷Pixiv 设置里可改（`dirTemplate`）；画廊不另存一份；
+- **刷Pixiv 数据**：`%USERPROFILE%\.dsh\pixiv-duty`。
+
+一句话：**代码、数据、原图都在 C 盘的 `~\.dsh` 下**（早期装在 D 盘的老用户，代码仍在 D 盘，脚本不会替你搬家）。
 
 ## 看图通路（视觉后端）
 
@@ -67,28 +189,26 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/splanternQAQ/dsh-p
 2. **本机网关** —— `http://127.0.0.1:8326/v1`。它由插件 **dsh-providers-hub** 提供，把您已经登录的 provider 账号转成一个本地 OpenAI 兼容接口；密钥就是那个插件自己生成的 `~/.dsh/openai-gateway/api-key`，所以这里不用填。
 3. **DSH 宿主的视觉模型** —— 前两条都不可用时的最后底牌（同进程直接调用，不依赖任何端口）。
 
-关键点：**第 2 条是可选增强，不是依赖**。没装 dsh-providers-hub 的画廊照样能看图，只是少了「免注册、免密钥」那一份便利；装了之后重启 DSH 就有一条现成的通路。
+关键点：**第 2 条是可选增强，不是依赖**。没装 dsh-providers-hub 的画廊照样能看图，只是少了「免注册、免密钥」那一份便利。
 
-**默认用的就是 DeepSeek**：本机网关里的首选模型是 `deepseek-official/deepseek-flash`，而最后兜底的宿主模型也是 DSH 当前选中的那个 DeepSeek。所以三格什么都不填、连 providers-hub 都没装，画面依然能看能打分——只是少了中间那一份「省额度」的便利。设置 → 视觉后端 打开时会自动检测一次，把「插件装没装 / 8326 通不通 / 现在会走哪条」直接显示出来；「画廊运行测试」里也会跑同样的三项检查，新用户一装完就能看到自己缺哪一步。
+**默认用的就是 DeepSeek**：本机网关里的首选模型是 `deepseek-official/deepseek-flash`，而最后兜底的宿主模型也是 DSH 当前选中的那个 DeepSeek。所以三格什么都不填、连 providers-hub 都没装，画面依然能看能打分。设置 → 视觉后端 打开时会自动检测一次，把「插件装没装 / 8326 通不通 / 现在会走哪条」直接显示出来。
 
 ### 要不要装 dsh-providers-hub
 
 设置 → 视觉后端 里有两个按钮，配合用：
 
 - **检测本机网关** —— 报告「插件装没装 / 8326 通不通 / 能列出几个模型」，并给出下一步建议；
-- **一键安装 dsh-providers-hub** —— 点了就执行 `npm install dsh-providers-hub@latest`（装进当前 DSH profile），把它挂进 profile 的 `dsh.profile.bundles`，**重启 DSH 后生效**。安装前会自动备份 `package.json`（`package.json.bak-hub-<时间戳>`），装不上会把 npm 的原始输出一起返回来。
-- 旁边的 **看它是什么（npm 页面）** 指向 <https://www.npmjs.com/package/dsh-providers-hub>。那个包没有填 repository 字段，所以只能给 npm 页面——上面有描述、版本和发布时间，够判断装的是什么。
+- **一键安装 dsh-providers-hub** —— 执行 `npm install dsh-providers-hub@latest`（装进当前 DSH profile），挂进 `dsh.profile.bundles`，**重启 DSH 后生效**。装前自动备份 `package.json.bak-hub-<时间戳>`。
+- 旁边的 **看它是什么（npm 页面）** 指向 <https://www.npmjs.com/package/dsh-providers-hub>。
 
-装完还需要在**那个插件自己的界面**里登录一次 provider 账号（它负责账号池、静默刷新凭据、领额度），8326 才会有模型清单。
+装完还需要在**那个插件自己的界面**里登录一次 provider 账号，8326 才会有模型清单。
 
 ### 它和 Jet Hub 不是一回事
 
-两者经常被混在一起说，实际上是两层：
+- **dsh-providers-hub** 在「本地协议转换」层：把已登录的账号变成一个 `127.0.0.1:8326/v1` 接口。
+- **Jet Hub** 在「上游供给 / 额度面板」层：提供模型清单里的 `jet-hub-auto/auto`、`opencode/*` 这类条目。
 
-- **dsh-providers-hub** 在「本地协议转换」层：把您已经登录的账号变成一个 `127.0.0.1:8326/v1` 接口，谁都能按 OpenAI 协议来调。
-- **Jet Hub** 在「上游供给 / 额度面板」层：它提供的是模型清单里的 `jet-hub-auto/auto`、`opencode/*` 这些条目——也就是「拿什么来回答」。
-
-所以装了 providers-hub 不等于有了额度；Jet Hub 有额度也不等于本机有一个 8326 网关。画廊只认「能不能按 OpenAI 协议看图」，两层谁在都行，两条都缺就会退到宿主模型。
+所以装了 providers-hub 不等于有额度；Jet Hub 有额度也不等于本机有 8326 网关。画廊只认「能不能按 OpenAI 协议看图」，两条都缺就会退到宿主模型。
 
 ### 三个格子怎么填
 
@@ -100,46 +220,48 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/splanternQAQ/dsh-p
 
 「强度」只调 token 预算，不改打分尺度：**快速 ×0.6 / 标准 ×1 / 仔细 ×1.7**（`仔细` 适合长结论、多标签的画风分析，也更费额度）。
 
-现成的九组地址（OpenAI、硅基流动、智谱、阿里百炼、火山方舟、OpenRouter、月之暗面、本机网关、清空）只填地址并复制到剪贴板，**不替您决定模型名**——每家能看图的模型不一样，也常换。
-
-### 排错对照
-
-| 现象 | 原因 / 处理 |
-| --- | --- |
-| 检测说「没检测到 dsh-providers-hub」 | 没装，或装在别的 profile 里；点一键安装，或直接填一家自定义端点 |
-| 8326 不通 | 插件没被加载（重启 DSH）、没登录账号、或 `DSH_OPENAI_GATEWAY_ENABLED=0`；端口可用 `DSH_OPENAI_GATEWAY_PORT` 改 |
-| `401/403` | 密钥无效，或这家不开放 `/models` 清单；手填模型名再试 |
-| `HTTP 400 … Declared image type does not match its bytes` | 图片声明的 mime 与字节不符。这类 4xx 不会再让渠道冷却 3 分钟，换下一张即可 |
-| 结论位置出现「请运行 … doctor」这类句子 | 那是以前被当成结论存下来的脏数据。现在写盘前会过一遍 `sanitizeTasteStyle`，这类句子进不来，也会被读档时过滤掉 |
-
 渠道失败会进 3 分钟冷却（4xx 不算），冷却中的渠道排到队尾但仍会重试；`/vision/status` 能看到当前链路与冷却表。
 
 ## 跑一轮的三个开关
 
 ### 新鲜度：全局设定，与严格度同级
 
-顶栏「严格度」旁边新增**新鲜度**，五档：**不限时间 / 近 10 年 / 近 5 年 / 近 3 年 / 近一年**，默认**近 5 年**。
+顶栏「严格度」旁边的**新鲜度**，五档：**不限时间 / 近 10 年 / 近 5 年 / 近 3 年 / 近一年**，默认**近 5 年**。
 
-- 它是**全局**设定：跑一轮时会直接覆盖预设里的 `freshDays`——**预设里的时间限制从此作废**，只看这一处。
-- 选「不限时间」会弹一次风险提示：可能刷到很久远、品质未必合口味的作品。
-- 判定对**所有**候选生效（以前只管关注时间线，关键词搜进来的完全不看日期）。拿不到发表日期就按不合格处理，不再静默放行。
-- 语义变了：从前 `freshDays: 0` 在放宽阶梯里意味着「候选不够就取消时间限制」，现在不会了——时间范围是您定的，引擎不擅自取消。
+- **全局**设定：跑一轮时直接覆盖预设里的 `freshDays`，预设里的时间限制从此作废；
+- 选「不限时间」会弹一次风险提示；但「不限」也不是只推老作 —— 近 10 年内够用就先不往更旧里翻；
+- 判定对**所有**候选生效（不只关注时间线）；拿不到发表日期按不合格处理。
 
 ### 进度条跨窗口存活
 
-跑一轮时切到别的窗口再回来，进度条不会消失：
-
-- 进度落盘到 `~/.dsh/dsh-pixiv-Kindred-Gallery/run-progress.json`（节流 1.5 秒写一次），后端 `/fast/progress` 内存里没有就读盘；
-- 回到画廊后每 2.5 秒对一次：还在跑 → 继续显示；已跑完 → 告诉您「已经跑完了，收了 N 张」；失败 → 显示失败原因；盘上的 `running` 超过 8 分钟判为「上一轮被中断了（DSH 重启或进程退出）」；
-- 非 running 的记录保留 12 小时，够您第二天回来看到昨天那轮的结果。
+- 进度落盘到 `~/.dsh/dsh-pixiv-Kindred-Gallery/run-progress.json`（节流 1.5 秒写一次）；
+- 回到画廊后每 2.5 秒对一次：还在跑 → 继续显示；跑完 → 告诉你「收了 N 张」并补一次结算卡；
+- 盘上 `running` 超过 8 分钟判为「上一轮被中断了」；非 running 记录保留 12 小时。
 
 ### 让路器：您在忙的时候它自己减速
 
-`lib/governor.mjs` 每 15 秒看一次 `~/.dsh/sessions` 里**别的会话**有没有在增长（按会话文件的字节增量估算 token，跳过自己）：
+`lib/governor.mjs` 每 15 秒看一次 `~/.dsh/sessions` 里**别的会话**是否在增长：
 
-- **≥ 2 个别的会话活跃** → 调用速率立刻压到 **70%**（-30%），不打断当前轮；
-- **只有 1 个**且在持续消耗（≥160 token/分）→ 从 100% 线性降到 70%；
-- 其余情况 100%。只压并发与节奏，不改判定标准、不跳步骤；下限 3 个并发，保证不会慢到停住。
+- **≥ 2 个别的会话活跃** → 速率压到 **70%**，不打断当前轮；
+- **只有 1 个**且在持续消耗 → 从 100% 线性降到 70%；
+- 其余 100%。只压并发与节奏，不改判定标准；下限 3 个并发。
+
+## 常见问题
+
+| 问题 | 处理 |
+| --- | --- |
+| 装完没有「知心画廊」标签 | 重启 DSH；再看 profile `package.json` 的 `dependencies` 与 `dsh.profile.bundles` 是否都有它 |
+| 主界面整块空白 / 版本号对但行为是旧的 | 重跑安装命令，或点设置里「检查更新 → 重装最新版」 |
+| 跑不出一轮、下载没反应 | 没装或没登录 **刷Pixiv**（`dsh-pixiv-scroll`）；设置 → 下载相关 → 一键安装后重启 |
+| 提示 R-18G 取不到图 | 那是 pixiv 账号设置里的开关，插件只能间接读、不能替你改 |
+| 「视觉后端」检测说没有网关 | 没装 dsh-providers-hub，或 8326 不通；也可以直接填一家自定义端点，画廊照样能看图 |
+| 弹窗里字看不清 | 1.3.5 起浮层会自带主题底色；还看不清就在设置里 `Ctrl+R` 整页重取一次 |
+| 打包出来的 7z 打不开 | 密码是**「春」**（单个汉字）；压缩包 1 小时后自动删除，请及时取走 |
+| 一键复制进 QQ 只粘了一张 | QQ 粘贴上限约 10 个文件，所以拆成「复制前 10 张 / 复制后 10 张」，更多请用「打包本页 7z」 |
+| 主界面自己翻到最底部 | 已在 1.3.5 修掉（去掉输入框 autofocus + 进入时复位滚动）；还复现就 `Ctrl+R` |
+| 左边侧栏不见了 | 右键那个「画」的胶囊 → 收起；要放回来去 设置 → 侧栏 里打开 |
+| 收藏夹拖不动 / 换位报错 | 只有同档才能互换：金针（系统）不能动，优先置顶只与优先置顶换，普通只与普通换 |
+| 怎么卸载 | 删 profile `package.json` 的两条 + `node_modules` 里的联接 + 安装目录；数据目录可留 |
 
 ## 致谢
 
@@ -163,6 +285,48 @@ MIT。刷Pixiv 插件另见其自身仓库与许可。
 ---
 
 ## 更新日志（倒序）
+
+### 1.5.0 — 交互大改：画廊检索、分享打包、统计与安全声明（推送于 __PUSH_TIME__）
+
+**界面交互（这一版改动最大的一块）**
+- 插件视图整体重排：顶栏按钮按功能分组、各自配色，检索 / 设置 / 刷新一眼分清；浅色与深色两套主题都重新校了对比度。
+- 新增统一悬停提示层：提示一律浮在目标**上方**，自动避开鼠标指针，贴边会自动换边换向，浅色主题同样看得清。
+- 卡片二级页：加载中禁用 Tab（焦点不再乱跑到聊天框），读完自动落到第一件作品上，并带可见焦点框。
+- 弹窗支持 **Esc 取消 / Enter 确认**；左侧栏切走时画廊会自动收起，不再占着标签页。
+- 「作品库 · 全部作品」合成一枚入口按钮；收藏夹与标签两栏各自可滚动、可折叠；右键侧栏胶囊可直接把画廊收起来（设置里能放出来）。
+
+**画廊检索（新功能）**
+- 顶栏新增「画廊检索」：可以问画廊怎么用，也可以粘 pid 或 pixiv 作品链接直接预览；说要改什么（加目标标签、建收藏夹、调开关）会真的落到设置里。
+
+**tips 播报（新功能）**
+- 主界面固定位置轮播 tips：使用说明 / 安全提示 / 开发碎碎念三档混排，10 秒一条。
+
+**分享（新功能）**
+- 作品库每页新增「复制前 10 张 / 复制后 10 张」：按**文件**放进剪贴板，QQ 里直接粘贴就发图。
+- 新增「打包本页 7z」：归档名为 `[画廊]<页码>_<第一件作品标题>『春』.7z`，自带密码「春」，**一小时后自动删除**，避免把整页原图长期留在硬盘上。
+
+**作品库**
+- 新增「纯图模式」：只留封面，一页 30 张，标题信息带收起动画。
+- 收藏夹分档：系统金针（藏赏两宜）/ 优先置顶 / 普通置顶 / 未置顶，只有同档之间能长按拖动换位。
+- 新增默认收藏夹「藏赏两宜，无可挑剔」：自动收录 **10 分、且这件作品的全部标签都在你的喜爱标签里**的作品；顶置、不可拖动。
+- 10 分 + 全标签命中的作品改用**炫彩描边与彩色背光**，描边完整包住整张卡片。
+- 作品库去重：同一件作品出现在多张卡片里不再重复显示（之前会越点越多）。
+- 动图（ugoira）下载即整段落盘，已收藏的动图会自动补齐；离线也能循环播放，不再每次现合成。
+
+**回收站与卡片**
+- 删除整张卡片时，卡内作品跟着卡片一起进「卡片回收站」，不再散落到作品回收站；恢复卡片就整个回来。
+- 回收站恢复的作品统一进常驻置顶的「恢复的作品」卡片：可以单件评分，卡片本身不显示进度与均分；作品进库或被删后立刻离开，空了卡片自动消失。
+- 回收站默认保留 **2 天、最多 50 件**，两个数都能在设置里改。
+
+**统计与判定**
+- 主界面标题下新增统计：卡片数、作品数、已完成卡片、评分次数、在库件数、磁盘占用（原图 + 缩略图）、今日新增、待删占用；每一项单独悬停，待删会列出具体条目。
+- 完美卡片门槛改为：**原始均分 ≥ 8，且原始均分与当前均分的差 ≤ 1**（设置里可调）。
+- 设置里的标签均分显示到小数点后两位。
+
+**安全与文档**
+- 仓库新增「安全与权限」一节：列出插件读写哪些路径、为什么运行时会调 PowerShell（剪贴板、资源管理器定位、7z 打包）、以及"不做"的清单 —— 不读系统凭据、不上传任何数据、无第三方统计埋点。
+- 安装脚本改为「先打印、再执行」两步式，可指定安装目录（默认 `%USERPROFILE%\.dsh\plugins`），全程不请求管理员权限。
+- README 整体重排：能力表、快速开始、安装细节、数据位置、常见问题。
 
 ### 1.3.5 — 标题旁常显界面版本、只认真正的整页刷新（推送于 2026-11-17 01:43:19）
 - 标题「Pixiv 知心画廊」右边新增一枚小胶囊 **v1.3.5**：它显示当前这份前端代码的版本，点一下等于整页重取。不用再猜"到底换没换界面"。
