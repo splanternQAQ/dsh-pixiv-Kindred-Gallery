@@ -1,6 +1,6 @@
 {
   "name": "dsh-pixiv-kindred-gallery",
-  "version": "1.5.5",
+  "version": "1.5.8",
   "description": "Pixiv 知心画廊：跑一轮 / 评分 / 作品库 / 口味画像的 DSH 插件（依赖刷Pixiv 插件 dsh-pixiv-scroll 1.1.14）。本地优先：数据只存在本机、无遥测、只连 pixiv 与你自己的模型端点",
   "keywords": [
     "dsh",
