@@ -19,8 +19,19 @@
 
 ---
 
+## 长什么样
+
+<div align="center">
+
+<img src="assets/screenshots/gallery-cards.png" alt="卡片列表（浅色主题）" width="100%">
+
+<img src="assets/screenshots/library-cards.png" alt="作品库（浅色主题）" width="100%">
+
+</div>
+
 ## 目录
 
+- [长什么样](#长什么样)
 - [它做什么](#它做什么)
 - [快速开始](#快速开始)
 - [安装细节](#安装细节)
