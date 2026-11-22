@@ -297,7 +297,7 @@ MIT。刷Pixiv 插件另见其自身仓库与许可。
 
 ## 更新日志（倒序）
 
-### v1.6.0 · 2026-11-23 05:03:14
+### v1.6.0 · C:\Users\Lenovo\.dsh\dsh-pixiv-Kindred-Gallery\_t.cjs
 
 这一版把「看着别扭」和「按了没反应」的地方一次补齐。
 
