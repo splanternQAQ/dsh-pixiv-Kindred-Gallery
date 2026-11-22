@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.5.8'
+    const CLIENT_BUILD = '1.6.0'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -2547,6 +2547,36 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-side] [data-pg-sidehead][data-tone="sky"],[data-pg-side] [data-pg-sidehead][data-tone="sky"] [data-pg-sidecount]{color:#38bdf8;}
 [data-pg-side] [data-pg-sidehead][data-tone="sky"]:hover{color:#7dd3fc;}
 [data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="yellow"],[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="yellow"] [data-pg-sidecount]{color:#f0b100;text-shadow:0 1px 0 rgba(255,255,255,.75);}
+[data-pg-side] [data-pg-sidehead][data-pg-gold],[data-pg-collect-side] [data-pg-sidehead][data-pg-gold]{cursor:pointer;margin:4px 4px 6px;padding:5px 12px;border-radius:999px;background:linear-gradient(180deg,#f9cf4a 0%,#eaa500 100%);border:1.5px solid #ffe082;color:#fff;font-weight:900;text-shadow:0 1px 1px rgba(140,82,0,.45);box-shadow:0 3px 10px rgba(234,165,0,.35),inset 0 1px 0 rgba(255,255,255,.45);opacity:1;}
+[data-pg-side] [data-pg-sidehead][data-pg-gold]:hover,[data-pg-collect-side] [data-pg-sidehead][data-pg-gold]:hover{color:#fff;filter:brightness(1.06);}
+[data-pg-side] [data-pg-sidehead][data-pg-gold] [data-pg-sidecount],[data-pg-collect-side] [data-pg-sidehead][data-pg-gold] [data-pg-sidecount]{color:#fff;opacity:.92;}
+[data-pg-collect-side] [data-pg-sidehead][data-pg-gold]{display:flex;align-items:center;gap:6px;}
+[data-pg-collect-side] [data-pg-sidehead][data-pg-gold] [data-pg-sidecount]{margin-left:auto;font-size:12px;font-weight:800;}
+[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-pg-gold],[data-pg-theme="light"] [data-pg-collect-side] [data-pg-sidehead][data-pg-gold]{background:linear-gradient(180deg,#f3b61c 0%,#cf8d00 100%);border-color:#f6c945;color:#fff;text-shadow:0 1px 1px rgba(96,56,0,.5);box-shadow:0 2px 8px rgba(180,120,0,.28),inset 0 1px 0 rgba(255,255,255,.4);}
+[data-pg-side] button[data-pg-sideadd],[data-pg-collect-side] button[data-pg-sideadd]{border:1.5px dashed rgba(250,204,21,.75);background:rgba(250,204,21,.08);color:#facc15;font-weight:700;letter-spacing:.02em;}
+[data-pg-side] button[data-pg-sideadd]:hover,[data-pg-collect-side] button[data-pg-sideadd]:hover{background:rgba(250,204,21,.16);}
+[data-pg-theme="light"] [data-pg-side] button[data-pg-sideadd],[data-pg-theme="light"] [data-pg-collect-side] button[data-pg-sideadd]{color:#a16207;border-color:rgba(202,138,4,.7);background:rgba(250,204,21,.14);}
+[data-pg-theme="light"] [data-pg-side] button[data-pg-sideadd]:hover,[data-pg-theme="light"] [data-pg-collect-side] button[data-pg-sideadd]:hover{background:rgba(250,204,21,.24);}
+[data-pg-modal][data-pg-tagpick] [data-pg-sheet]{width:min(680px,94vw);max-height:86vh;overflow:auto;padding:18px 20px;}
+[data-pg-modal][data-pg-tagpick] [data-pg-input]{width:100%;margin-top:10px;}
+[data-pg-tagpicklist]{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0 12px;}
+[data-pg-tagpicklist] button{border:1px solid rgba(250,204,21,.45);background:rgba(250,204,21,.1);color:#facc15;border-radius:999px;padding:3px 10px;font-size:12px;line-height:18px;cursor:pointer;}
+[data-pg-tagpicklist] button:hover{background:rgba(250,204,21,.22);}
+[data-pg-tagpicklist] button:disabled{opacity:.6;cursor:default;border-style:dashed;}
+[data-pg-tagpicklist] button span{opacity:.6;font-size:11px;}
+[data-pg-theme="light"] [data-pg-tagpicklist] button{color:#a16207;border-color:rgba(202,138,4,.45);background:rgba(250,204,21,.18);}
+[data-pg-theme="light"] [data-pg-tagpicklist] button:hover{background:rgba(250,204,21,.3);}
+[data-pg-tutbtn]{border:1.5px solid rgba(244,114,182,.9)!important;background:transparent!important;color:#f472b6!important;font-weight:800;letter-spacing:.02em;box-shadow:0 0 10px rgba(244,114,182,.18);}
+[data-pg-tutbtn]:hover{background:rgba(244,114,182,.12)!important;color:#fb7185!important;box-shadow:0 0 14px rgba(244,114,182,.32);}
+[data-pg-theme="light"] [data-pg-tutbtn]{border-color:#db2777!important;color:#db2777!important;background:rgba(255,255,255,.35)!important;}
+[data-pg-theme="light"] [data-pg-tutbtn]:hover{background:rgba(219,39,119,.08)!important;}
+[data-pg-modal][data-pg-tutorial] [data-pg-sheet]{width:min(760px,94vw);max-height:88vh;overflow:auto;padding:20px 22px;}
+[data-pg-tutorial] [data-pg-tutcard]{border:1px solid rgba(244,114,182,.34);border-radius:12px;padding:12px 14px;margin-top:10px;background:rgba(244,114,182,.05);}
+[data-pg-tutorial] [data-pg-tutcard] b{color:#f472b6;font-size:14.5px;}
+[data-pg-tutorial] [data-pg-tutcard] p{margin:6px 0 0;font-size:13px;line-height:1.72;color:var(--dsw-alias-label-secondary,#cbd5e1);}
+[data-pg-theme="light"] [data-pg-tutorial] [data-pg-tutcard]{background:rgba(244,114,182,.07);border-color:rgba(219,39,119,.28);}
+[data-pg-theme="light"] [data-pg-tutorial] [data-pg-tutcard] b{color:#be185d;}
+[data-pg-theme="light"] [data-pg-tutorial] [data-pg-tutcard] p{color:#334155;}
 [data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="sky"],[data-pg-theme="light"] [data-pg-side] [data-pg-sidehead][data-tone="sky"] [data-pg-sidecount]{color:#0ea5e9;text-shadow:0 1px 0 rgba(255,255,255,.75);}
 [data-pg-side] [data-pg-sidegrp][data-folded]{flex:0 0 auto;}
 [data-pg-side] button span:not([data-pg-libentryname]):not([data-pg-libentrynum]):not([data-pg-sideheadtext]):not([data-pg-sidecount]):not([data-pg-fold]){margin-left:auto;font-size:10px;opacity:.65;}
@@ -3336,6 +3366,16 @@ a[data-pg-bgcredit]:hover{color:#2563eb;text-decoration:underline;}
         [data-pg-msumtags] span{padding:1px 9px;border-radius:999px;background:rgba(236,72,153,.16);color:#f9a8d4;font-weight:700;}
         [data-pg-msumcopy]{font-size:13.5px;line-height:1.8;color:#e2e8f0;background:rgba(34,197,94,.08);border-left:3px solid rgba(74,222,128,.6);padding:10px 12px;border-radius:0 10px 10px 0;}
         [data-pg-msumnote]{font-size:11.5px;color:#94a3b8;}
+        /* 浅色：多轮总结卡是跑完之后才弹的，不能靠外面页面兜底 —— 这里单独给一套高对比配色 */
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumhead] b{color:#1b1e26;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumhead] span{color:#6d28d9;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumgrid] i{background:#f4f1ff;border-color:#d8d2f7;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumgrid] em{color:#312e81;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumgrid] span{color:#475569;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumtags]{color:#334155;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumtags] span{background:#fce7f3;color:#be185d;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumcopy]{background:#ecfdf5;color:#14532d;border-left-color:#34d399;}
+        [data-pg-theme="light"] [data-pg-multisum] [data-pg-msumnote]{color:#475569;}
         [data-pg-modal][data-pg-multiask] [data-pg-gatenote] b{color:#fbbf24;}
         @media (prefers-reduced-motion: reduce){[data-pg-multi-btn]{transition:none;}}
 [data-pg-swi]{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(16,20,28,.55);cursor:pointer;user-select:none;}
@@ -3768,9 +3808,13 @@ const pgRainbowIcon = (kind) => h('span', { 'data-pg-rainbowicon': '', 'data-ico
 
     /** 轮次卡头图：失败重试两次，仍失败就画占位（别再用 opacity .1 冒充「透明」） */
         /* 卡片里的缩略图：取不到就换成一块占位，别把浏览器的破图标留在那儿 */
-    function WorkThumb({ round, id, title, xr }) {
+    function WorkThumb({ round, id, title, xr, ugoira }) {
       const [dead, setDead] = React.useState(false)
       const [tryN, setTryN] = React.useState(0)
+      /* 动图卡片：缓存里已经有 _anim.webp 就直接循环播；还没合成好就隔一会儿再问，
+         问到第 8 次仍没有才退回静帧，不让整屏卡片一直空着。 */
+      const [liveN, setLiveN] = React.useState(0)
+      const live = Boolean(ugoira && id && liveN < 8)
       /* 取图失败分两种：作品真没了（404 x-gone）和这会儿取不到（限流/超时/风控）。
          后者重试一次就好，别直接判死 —— 一屏「预览取不到」多半是后者。 */
       if (dead) {
@@ -3781,6 +3825,12 @@ const pgRainbowIcon = (kind) => h('span', { 'data-pg-rainbowicon': '', 'data-ico
           title: `${title || id}：这会儿没取到（限流或网络），点一下重试；一直不行就是作品已被删除`,
         }, '预览没取到 · 点一下重试')
       }
+      if (live) return h('img', {
+        key: 'anim:' + liveN,
+        src: `${BASE}/ugoira-anim?id=${enc(id)}&r=${liveN}`,
+        loading: 'lazy', alt: '', 'data-pg-ugoira-anim': '',
+        onError: () => setTimeout(() => setLiveN((n) => n + 1), 2200),
+      })
       return h('img', {
         key: tryN,
         src: `${BASE}/thumb?round=${enc(round)}&id=${enc(id)}&r=${tryN}`,
@@ -4374,6 +4424,7 @@ function RoundCover({ roundId, id, title, artist }) {
         if (light || typeof onSwitchRound !== 'function') return undefined
         const onKey = (e) => {
           if (e.ctrlKey || e.metaKey || e.altKey) return
+          if (!kbTopIs(detailRootRef.current)) return
           const el = e.target
           const tag = String(el?.tagName || '').toUpperCase()
           if (el?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -4384,6 +4435,33 @@ function RoundCover({ roundId, id, title, artist }) {
         window.addEventListener('keydown', onKey, true)
         return () => window.removeEventListener('keydown', onKey, true)
       }, [light, onSwitchRound])
+      /* 卡片一级页：↑/↓ 与 W/S 在这一轮的作品之间走，别再落到宿主页面滚轮上。
+         只在最上层就是这个详情时接管，二级查看器打开时让位给它。 */
+      React.useEffect(() => {
+        if (light || spread) return undefined
+        const onKey = (e) => {
+          if (e.ctrlKey || e.metaKey || e.altKey) return
+          const el = e.target
+          const tag = String(el?.tagName || '').toUpperCase()
+          if (el?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+          if (!kbTopIs(detailRootRef.current)) return
+          const up = e.key === 'ArrowUp' || kbKeyHit(e, 'moveUp')
+          const down = e.key === 'ArrowDown' || kbKeyHit(e, 'moveDown')
+          if (!up && !down) return
+          const root = detailRootRef.current
+          if (!root) return
+          const items = Array.from(root.querySelectorAll('[data-pg-work]'))
+          if (!items.length) return
+          e.preventDefault(); e.stopImmediatePropagation()
+          const act = document.activeElement
+          const i = items.findIndex((x) => x === act || x.contains(act))
+          const n = Math.max(0, Math.min(items.length - 1, i + (up ? -1 : 1)))
+          if (n === i) { say(up ? '已经是这一轮的第一件了' : '已经是这一轮的最后一件了', 'warn'); return }
+          kbFocus(items[n])
+        }
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
+      }, [light, spread, liveItems.length])
       React.useEffect(() => {
         if (!allDone) { doneAnnounced.current = false; return }
         if (doneAnnounced.current) return
@@ -4416,6 +4494,7 @@ function RoundCover({ roundId, id, title, artist }) {
         if (d) return undefined
         const onKey = (e) => {
           if (e.key !== 'Tab') return
+          if (!kbTopIs(detailRootRef.current)) return
           e.preventDefault()
           e.stopImmediatePropagation()
         }
@@ -4908,7 +4987,7 @@ function RoundCover({ roundId, id, title, artist }) {
         onClick: (e) => { e.stopPropagation(); closeWithReport() },
       },
         fhudEl(),
-        h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation() },
+        h('div', { 'data-pg-sheet': '', 'data-pg-kblocal': '', onClick: (e) => e.stopPropagation() },
           h('div', { 'data-pg-banner': '' },
             header ? h('img', { src: `${BASE}/thumb?round=${enc(round)}&id=${enc(header.id)}`, alt: '' }) : null,
             h('div', { className: 'shade' }),
@@ -5008,7 +5087,7 @@ function RoundCover({ roundId, id, title, artist }) {
                     }
                   },
                 },
-                  h(WorkThumb, { round, id: it.id, title: it.title, xr: it.xRestrict }),
+                  h(WorkThumb, { round, id: it.id, title: it.title, xr: it.xRestrict, ugoira: it.ugoira }),
                   rk === 'r18g' ? h('span', { 'data-pg-r18': '', 'data-g': '' }, 'R-18G') : rk === 'r18' ? h('span', { 'data-pg-r18': '' }, 'R-18') : null,
                   it.ai ? h('span', { 'data-pg-ai': '' }, 'AI') : null,
                   it.ugoira ? h('span', { 'data-pg-ugoira': '', style: { position: 'absolute', left: '8px', top: it.ai ? (String(it.rating).toLowerCase() === 'r18' ? '52px' : '28px') : (String(it.rating).toLowerCase() === 'r18' ? '28px' : '8px') } }, '动图') : null,
@@ -5701,10 +5780,11 @@ function RoundCover({ roundId, id, title, artist }) {
           busy === 'add' ? '加入中…' : '加入所选收藏夹' + (sel.length ? '（' + sel.length + '）' : '')))
       return h('div', { 'data-pg-collpick': '' }, head, body, foot)
     }
-    function WorkDetail2({ work, allTags = [], autoTags = [], manualTags = [], group = null, onClose, onChanged, say, onLocate = null }) {
+    function WorkDetail2({ work, allTags = [], autoTags = [], manualTags = [], group = null, onClose, onChanged, say, onLocate = null, onStep = null }) {
   const [targetTags, setTargetTags] = React.useState([])
   React.useEffect(() => { api('/tags/dynamic').then((r) => setTargetTags(Array.isArray(r?.targetTags) ? r.targetTags : [])).catch(() => {}) }, [])
       const [w, setW] = React.useState(work)
+      const rootRef = React.useRef(null)
       const rateQueue = React.useRef(Promise.resolve())
       const rateSeq = React.useRef(0)
       const changeTimer = React.useRef(0)
@@ -5799,12 +5879,18 @@ function RoundCover({ roundId, id, title, artist }) {
       React.useEffect(() => {
         const onKey = (e) => {
           if (light) return
+          if (!kbTopIs(rootRef.current)) return
           const tag = String(e.target?.tagName || '').toUpperCase()
           if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target?.isContentEditable) return
           const k = String(e.key || '').toLowerCase()
           if (e.key === 'Escape') {
             if (tagMenu) { e.preventDefault(); e.stopPropagation(); setTagMenu(null); return }
             e.preventDefault(); e.stopPropagation(); onClose(); return
+          }
+          if (typeof onStep === 'function') {
+            const up = e.key === 'ArrowUp' || kbKeyHit(e, 'moveUp')
+            const down = e.key === 'ArrowDown' || kbKeyHit(e, 'moveDown')
+            if (up || down) { e.preventDefault(); e.stopPropagation(); onStep(up ? -1 : 1); return }
           }
           if (!e.ctrlKey && !e.metaKey && !e.altKey) {
             if (/^[0-9]$/.test(String(e.key || ''))) { e.preventDefault(); e.stopPropagation(); rate(Number(e.key)); return }
@@ -5820,7 +5906,7 @@ function RoundCover({ roundId, id, title, artist }) {
         }
         window.addEventListener('keydown', onKey, true)
         return () => window.removeEventListener('keydown', onKey, true)
-      }, [light, pageCount, w, sourceUrl, authorPage, busy, tagMenu, onClose])
+      }, [light, pageCount, w, sourceUrl, authorPage, busy, tagMenu, onClose, onStep])
       const saveTags = async () => {
         setBusy('tags')
         try {
@@ -5922,7 +6008,7 @@ function RoundCover({ roundId, id, title, artist }) {
           promptNode)
       }
 
-      return h('div', { 'data-pg-modal': '', onClick: (e) => { e.stopPropagation(); onClose() } },
+      return h('div', { 'data-pg-modal': '', ref: rootRef, onClick: (e) => { e.stopPropagation(); onClose() } },
         h('div', { 'data-pg-sheet': '', 'data-pg-kblocal': '', onClick: (e) => e.stopPropagation() },
           h('div', { 'data-pg-body': '', style: { paddingTop: '18px' } },
             h('div', { 'data-pg-toolbar': '' },
@@ -6206,6 +6292,24 @@ const glowOf = (s) => {
   if (n >= 6) return 'rgba(52,211,153,.66)'
   return 'rgba(148,163,184,.5)'
 }
+/* 按可视区域算一页能放几件：取网格实际列宽/行高，窗口一变就重算。
+   主人要的是「每页被作品填满」，不再用固定的 15 / 20 / 30。 */
+const pgAutoFitCount = (gridSel, cardSel, gap, reserve, minRows) => {
+  try {
+    const grid = document.querySelector(gridSel)
+    if (!grid) return 0
+    const card = grid.querySelector(cardSel)
+    if (!card) return 0
+    const gw = grid.clientWidth || 0
+    const cr = card.getBoundingClientRect()
+    if (!gw || !cr.width || !cr.height) return 0
+    const top = Math.max(0, grid.getBoundingClientRect().top)
+    const avail = Math.max(cr.height, window.innerHeight - top - reserve)
+    const cols = Math.max(1, Math.round((gw + gap) / (cr.width + gap)))
+    const rows = Math.max(minRows || 2, Math.floor((avail + gap) / (cr.height + gap)))
+    return Math.max(cols, cols * rows)
+  } catch { return 0 }
+}
 function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
   const normTagKey = (t) => String(t || '').toLowerCase().replace(/[\s_\-（）()]/g, '')
       const [lib, setLib] = React.useState(null)
@@ -6223,7 +6327,9 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
   const [pure, setPure] = React.useState(() => { try { return localStorage.getItem('pixiv-gallery.pure') === '1' } catch { return false } })
   const [sideFold, setSideFold] = React.useState(() => { try { return JSON.parse(localStorage.getItem('pixiv-gallery.sidefold') || '{}') || {} } catch { return {} } })
   const toggleFold = (k) => setSideFold((old) => { const next = { ...(old || {}), [k]: !(old || {})[k] }; try { localStorage.setItem('pixiv-gallery.sidefold', JSON.stringify(next)) } catch { /* ignore */ } return next })
-  const pageSize = pure ? 30 : 20
+  /* 0.7.60 自适应分页：一页塞满可视区域；量不到时退回原来的 30/20 */
+  const [autoPage, setAutoPage] = React.useState(0)
+  const pageSize = autoPage || (pure ? 30 : 20)
   React.useEffect(() => { try { localStorage.setItem('pixiv-gallery.pure', pure ? '1' : '0') } catch { /* ignore */ } }, [pure])
       const [pageCopyBusy, setPageCopyBusy] = React.useState(false)
       const [pagePackBusy, setPagePackBusy] = React.useState(false)
@@ -6445,6 +6551,20 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       /* 顶栏那组翻页按钮不碰滚动位置；底部翻页一律直接回到最上方 */
       const goLibPage = (n) => { setLibPage(n) }
       const goLibPageTop = (n) => { setLibPage(n); window.setTimeout(pgScrollMainToTop, 40) }
+      /* 自适应页容量：网格/窗口尺寸一变就重算，不足一页也按一页算 */
+      React.useEffect(() => {
+        const calc = () => {
+          const n = pgAutoFitCount('[data-pg-lib-grid]', '[data-pg-lib-card]', 10, 58, 2)
+          if (n) setAutoPage((old) => (Math.abs(old - n) < 2 ? old : n))
+        }
+        calc()
+        const t = window.setTimeout(calc, 120)
+        window.addEventListener('resize', calc)
+        let ro = null
+        const grid = document.querySelector('[data-pg-lib-grid]')
+        if (grid && typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(calc); ro.observe(grid) }
+        return () => { window.clearTimeout(t); window.removeEventListener('resize', calc); if (ro) ro.disconnect() }
+      }, [libPg, pageWorks.length, pure, kind, name])
       React.useEffect(() => { setLibPage(1) }, [name, kind, q, filter, sort, scoreFilter])
       /* ---- 0.7.58 长按信息栏拖动：卡间排序 / 拖进收藏夹 / 拖到喜爱标签区 ---- */
       const titleOfName = (n) => {
@@ -7317,7 +7437,26 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             },
             h('div', { 'data-pg-rainbowring': '' }),
             h('div', { className: 'lc' },
-              w.cover ? h('img', { src: w.quick ? `${BASE}/thumb-by-id?id=${enc(w.id)}&w=240` : (w.virtual ? `${BASE}/thumb?round=${enc(w.round)}&id=${enc(w.id)}` : `${BASE}/lib-cover?name=${enc(w.name)}&w=240`), loading: 'lazy', alt: '', onError: (e) => { e.currentTarget.style.opacity = '.12' } }) : null,
+              w.cover ? (() => {
+                const still = w.quick ? `${BASE}/thumb-by-id?id=${enc(w.id)}&w=240` : (w.virtual ? `${BASE}/thumb?round=${enc(w.round)}&id=${enc(w.id)}` : `${BASE}/lib-cover?name=${enc(w.name)}&w=240`)
+                /* 动图直接播：先点整段动画，没合成好就每 2.5 秒重试一次（后台 backfill 正在补），8 次后回落到静帧 */
+                const live = (w.ugoira && w.id) ? `${BASE}/ugoira-anim?id=${enc(w.id)}` : ''
+                return h('img', {
+                  src: live || still, loading: 'lazy', alt: '', title: live ? '动图预览（自动播放）' : undefined,
+                  'data-pg-ugoira-live': live ? '' : undefined,
+                  onError: (e) => {
+                    const im = e.currentTarget
+                    const n = Number(im.dataset.retry || 0)
+                    if (live && n < 8) {
+                      im.dataset.retry = String(n + 1)
+                      window.setTimeout(() => { try { im.src = live + '&r=' + (n + 1) } catch { /* ignore */ } }, 2500)
+                      return
+                    }
+                    if (live) { try { im.src = still } catch { /* ignore */ } }
+                    else im.style.opacity = '.12'
+                  },
+                })
+              })() : null,
               h(CardMarks, { work: w }),
               pagesBadge(w.pageCount || w.pages, Array.isArray(w.files) ? w.files.length : 0),
               dl[String(w.id)] && dl[String(w.id)].state !== 'done'
@@ -7384,7 +7523,17 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             : Empty({ text: kind === 'all' ? '作品库还没有已评分的作品。' : '这个清单下还没有作品。' }),
           works.length > pageSize ? h(Pager, { page: libPg, pages: libPages, onChange: goLibPageTop, total: works.length, pageSize }) : null),
         dropFx ? h('div', { 'data-pg-dropfx': '' }, dropFx.text) : null,
-        sel ? h(WorkDetail2, { work: sel, allTags: (lib?.followedTags || lib?.favoriteTags || []), autoTags: (lib?.autoFavoriteTags || []), manualTags: (lib?.manualFavoriteTags || []), group: (kind === 'collection' || kind === 'tag') && name ? { kind, name } : null, onClose: () => setSel(null), onChanged: load, say, onLocate: locateWork }) : null,
+        sel ? h(WorkDetail2, { work: sel, allTags: (lib?.followedTags || lib?.favoriteTags || []), autoTags: (lib?.autoFavoriteTags || []), manualTags: (lib?.manualFavoriteTags || []), group: (kind === 'collection' || kind === 'tag') && name ? { kind, name } : null, onClose: () => setSel(null), onChanged: load, say, onLocate: locateWork, key: 'wd:' + sel.name,
+          onStep: (dir) => {
+            const i = works.findIndex((x) => x.name === sel.name)
+            if (i < 0) return
+            const j = i + dir
+            if (j < 0 || j >= works.length) { say(dir > 0 ? '已经是作品库的最后一件了' : '已经是作品库的第一件了', 'warn'); return }
+            const next = works[j]
+            setSel(next)
+            const pg = Math.floor(j / pageSize) + 1
+            if (pg !== libPg) setLibPage(pg)
+          } }) : null,
         menu ? h('div', { 'data-pg-ctx-backdrop': '', onClick: () => setMenu(null) }) : null,
         menu ? h('div', { 'data-pg-ctx': '', style: { left: menu.x, top: menu.y } },
           h('div', { 'data-pg-note': '', style: { padding: '3px 9px 5px' } }, menu.name),
@@ -11339,6 +11488,16 @@ const KeyCapture = ({ value, onChange }) => h('input', {
       const page = document.querySelector('[data-pg-page]')
       return page ? { kind: 'page', root: page } : null
     }
+    /* 当前最上层「正经浮层」是不是这一块：快捷键只交给它，绝不串联到后面的页面。
+       悬停小窗、提示气泡不算正经浮层，所以不进这张表。 */
+    const kbTopIs = (el) => {
+      if (!el) return false
+      const scope = kbScope()
+      if (!scope) return false
+      const layer = scope.layer || scope.root
+      if (!layer) return false
+      return layer === el || layer.contains(el) || el.contains(layer)
+    }
     const kbFocus = (el) => {
       if (!el) return false
       try { el.focus({ preventScroll: true }) } catch { try { el.focus() } catch { return false } }
@@ -11474,6 +11633,60 @@ const KeyCapture = ({ value, onChange }) => h('input', {
       return false
     }
 
+/* 新手教程：三种用法，语气照主人原话，不替主人改意思 */
+function TutorialSheet({ onClose }) {
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+  const card = (title, body) => h('div', { 'data-pg-tutcard': '' }, h('b', {}, title), h('p', {}, body))
+  return h('div', { 'data-pg-modal': '', 'data-pg-tutorial': '', 'data-pg-theme': PG_THEME, onClick: (e) => { e.stopPropagation(); onClose() } },
+    h('div', { 'data-pg-sheet': '', 'data-pg-theme': PG_THEME, onClick: (e) => e.stopPropagation() },
+      h('div', { 'data-pg-toolbar': '' },
+        h('div', { 'data-pg-grow': '' }, h('div', { 'data-pg-title': '', style: { fontSize: '18px' } }, '新手教程❤️')),
+        h('button', { 'data-pg-btn': '', onClick: onClose }, '关闭')),
+      h('div', { 'data-pg-note': '', style: { marginTop: '6px' } }, '会询问你想怎么使用这个插件？下面三种，挑最像自己的那一种看就行。'),
+      card('1. 探索类型', '主要是「漫无目的」地看，陶冶情操和寻找素材。其实不需要打太多分，毕竟不需要聚焦推送作品到自己喜欢的作品类型上。登上账号后直接来主界面，切换预设到「探索模式」。不过还是建议加一些目标标签，防止漫无目的地找。'),
+      card('2. 投其所好', '需要大量数据支撑（评分和标签列表 + Pixiv 账号数据）来寻找适合自己的画风，找到更优质的作者和涩图，并继续锁定更多你喜欢的作品。这就是本插件的主要玩法：设置好喜好标签和黑名单，甚至读过画风分析后，在主界面预设选择「溺爱模式」，或者直接上「涩涩航班」。前期有点牢，主界面严格度选「数量优先」，尽可能多跑几轮、多拿卡片多打分，然后再去作品库整理收藏；尤其是新 P 站号，极其需要数据来锁定喜欢的画风。后期数据够了，会自动加入一堆你喜欢的标签，还有一堆 10 分作品可以当画风参考；大部分不感兴趣和厌恶的标签权重会降得很低，但想完全避免还是得直接上黑名单。溺爱模式的卡片均分会有明显上升，推送质量也趋于稳定，逐渐实现涩图自由。'),
+      card('3. 仅安装，我自有妙用', '可以在遵循 MIT 的情况下随意取用画廊的代码，接到其他插件里，希望能给你的项目带来一些思路。'),
+      h('div', { 'data-pg-note': '', style: { marginTop: '12px' } }, '最后建议：跑多轮等待的时候，仔细看看设置界面，里面有很多很细的选项。画廊检索也能查一些简单的设置和问题，还能搜 pid 和作品。')))
+}
+/* 目标标签选择器：输入框 + 喜好标签 + 全部标签；左键或右键标签都能加入目标标签 */
+function TargetTagPicker({ tags = [], targetTags = [], onPick, onClose }) {
+  const [q, setQ] = React.useState('')
+  const lower = q.trim().toLowerCase()
+  const all = (tags || []).filter((x) => x && !x.special)
+  const filtered = lower ? all.filter((x) => String(x.tag || '').toLowerCase().includes(lower)) : all
+  const fav = filtered.filter((x) => x.source && x.source !== '')
+  const picked = (t) => (targetTags || []).some((x) => String(x).toLowerCase() === String(t).toLowerCase())
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+  const chip = (x) => h('button', {
+    key: 'tp:' + x.tag, disabled: picked(x.tag), title: '左键或右键加入目标标签',
+    onClick: () => onPick(x.tag),
+    onContextMenu: (e) => { e.preventDefault(); e.stopPropagation(); if (!picked(x.tag)) onPick(x.tag) },
+  }, (picked(x.tag) ? '✓ ' : '') + x.tag, h('span', {}, ' ' + (x.works ?? 0)))
+  const section = (title, list, hint) => h('div', { 'data-pg-tagpicksect': '' },
+    h('div', { 'data-pg-sidehead': '', style: { padding: '8px 0 2px' } }, title, h('span', {}, hint)),
+    list.length ? h('div', { 'data-pg-tagpicklist': '' }, list.slice(0, 160).map(chip)) : h('div', { 'data-pg-note': '' }, '没有匹配的标签'))
+  return h('div', { 'data-pg-modal': '', 'data-pg-tagpick': '', 'data-pg-theme': PG_THEME, onClick: (e) => { e.stopPropagation(); onClose() } },
+    h('div', { 'data-pg-sheet': '', 'data-pg-theme': PG_THEME, onClick: (e) => e.stopPropagation() },
+      h('div', { 'data-pg-toolbar': '' },
+        h('div', { 'data-pg-grow': '' }, h('div', { 'data-pg-title': '', style: { fontSize: '17px' } }, '添加目标标签')),
+        h('button', { 'data-pg-btn': '', onClick: onClose }, '关闭')),
+      h('input', {
+        'data-pg-input': '', autoFocus: true, value: q, placeholder: '输入标签名，回车直接加入目标标签',
+        onChange: (e) => setQ(e.target.value),
+        onKeyDown: (e) => { if (e.key === 'Enter' && q.trim()) { e.preventDefault(); onPick(q.trim()); setQ('') } },
+      }),
+      h('div', { 'data-pg-note': '', style: { margin: '6px 0 2px' } }, '目标标签会直接参与推送与「全部作品」的筛法；左键或右键标签都能加入。'),
+      section('喜好标签', fav, '来自你的评分与手动标记'),
+      section('全部标签', filtered, '按作品数排序')))
+}
 function GalleryTab2({ onScopeChanged }) {
       const [view, setView] = React.useState('rounds')
       const [uiTheme, setUiTheme] = React.useState('dark')
@@ -11515,6 +11728,8 @@ function GalleryTab2({ onScopeChanged }) {
   const [deleted, setDeleted] = React.useState(null)
   const [delArm, setDelArm] = React.useState('')
   const [cardMenu, setCardMenu] = React.useState(null)
+  const [tagStats, setTagStats] = React.useState([])
+  const [tagPick, setTagPick] = React.useState(false)
   /* 界面版本检查：插件更新后旧 bundle 还挂着、新代码永远不出现 —— 这里每分钟对一次版本号 */
   const [staleVer, setStaleVer] = React.useState('')
   React.useEffect(() => {
@@ -11543,6 +11758,8 @@ function GalleryTab2({ onScopeChanged }) {
       const [modeFilter, setModeFilter] = React.useState('all')
       const [ratingFilter, setRatingFilter] = React.useState('any')
       const [roundPage, setRoundPage] = React.useState(1)
+      /* 0.7.60 主界面也按可视区域自适应每页数量 */
+      const [autoRoundPage, setAutoRoundPage] = React.useState(0)
       const [sort, setSort] = React.useState('date-desc')
       const [q, setQ] = React.useState('')
       const [openRound, setOpenRound] = React.useState(null)
@@ -11562,6 +11779,7 @@ function GalleryTab2({ onScopeChanged }) {
       const [settings, setSettings] = React.useState(false)
       const [lookupOpen, setLookupOpen] = React.useState(false)
       const [fbOpen, setFbOpen] = React.useState(false)
+      const [tutOpen, setTutOpen] = React.useState(false)
       const [profileNudge, setProfileNudge] = React.useState(false)
       const [nudgeRun, setNudgeRun] = React.useState(false) // 引导里选了「现在就做」→ 进设置页直接开跑
       const [updPrompt, setUpdPrompt] = React.useState(null)
@@ -11908,7 +12126,9 @@ function GalleryTab2({ onScopeChanged }) {
       const tag = String(active?.tagName || '').toUpperCase()
       const isSelect = tag === 'SELECT'
       const editable = Boolean(inRoot && active && !isSelect && (kbEditable(active) || active.isContentEditable))
-      const localDetail = Boolean(scope.root.querySelector('[data-pg-kblocal]'))
+      /* 根节点自己带 data-pg-kblocal 也算：querySelector 不匹配自身，
+         否则作品详情/卡片详情这种「sheet 本身就是本地键盘层」的浮层会被漏掉。 */
+      const localDetail = Boolean((scope.root.matches && scope.root.matches('[data-pg-kblocal]')) || scope.root.querySelector('[data-pg-kblocal]'))
       // 一级卡片列表：Z / C 直接开上一张 / 下一张卡片（不用再 Tab 半天）
       if (!openRound && view === 'rounds' && !editable && (kbKeyHit(e, 'prevWork') || kbKeyHit(e, 'nextWork'))) {
         const cards = Array.from(document.querySelectorAll('[data-pg-card]'))
@@ -12772,7 +12992,7 @@ function GalleryTab2({ onScopeChanged }) {
               const ts = await api('/tag/stats')
               const m = {}
               for (const it of (ts?.items || [])) m[String(it.tag).toLowerCase()] = it
-              if (alive.current) setTagMap(m)
+              if (alive.current) { setTagMap(m); setTagStats(Array.isArray(ts?.items) ? ts.items : []) }
             } catch { /* ignore */ }
     setStrictLevel(['strict', 'balance', 'quantity'].includes(String(r?.config?.runStrictness)) ? String(r.config.runStrictness) : 'balance')
             setFreshDays([0, 3650, 1825, 1095, 365].includes(Number(r?.config?.runFreshness)) ? Number(r.config.runFreshness) : 1825)
@@ -12935,9 +13155,10 @@ function GalleryTab2({ onScopeChanged }) {
         { value: 'r18', label: 'R-18', rating: 'r18' },
         { value: 'r18g', label: 'R-18G', rating: 'r18g' },
       ]
-      const roundPages = Math.max(1, Math.ceil(viewRounds.length / 15))
+      const perRoundPage = autoRoundPage || 15
+      const roundPages = Math.max(1, Math.ceil(viewRounds.length / perRoundPage))
       const roundPg = Math.min(roundPage, roundPages)
-      const pageRounds = viewRounds.slice((roundPg - 1) * 15, roundPg * 15)
+      const pageRounds = viewRounds.slice((roundPg - 1) * perRoundPage, roundPg * perRoundPage)
       const goRoundPage = (n) => { setRoundPage(n); window.setTimeout(pgScrollMainToTop, 40) }
       /* ── 主界面卡片：长按拖动排序（只换位置，不动轮次数据） ── */
       const cardEls = () => Array.from(document.querySelectorAll('[data-pg-grid] [data-pg-card][data-round]'))
@@ -13049,6 +13270,19 @@ function GalleryTab2({ onScopeChanged }) {
         return () => window.removeEventListener('pointerup', cancel)
       }, [])
       React.useEffect(() => { setRoundPage(1) }, [collect, q, sort, modeFilter, ratingFilter])
+      React.useEffect(() => {
+        const calc = () => {
+          const n = pgAutoFitCount('[data-pg-grid]', '[data-pg-card][data-round]', 12, 66, 2)
+          if (n) setAutoRoundPage((old) => (Math.abs(old - n) < 2 ? old : n))
+        }
+        calc()
+        const t = window.setTimeout(calc, 120)
+        window.addEventListener('resize', calc)
+        let ro = null
+        const grid = document.querySelector('[data-pg-grid]')
+        if (grid && typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(calc); ro.observe(grid) }
+        return () => { window.clearTimeout(t); window.removeEventListener('resize', calc); if (ro) ro.disconnect() }
+      }, [roundPg, pageRounds.length, view, collect, q])
       const gridRounds = (() => {
         if (!drag) return pageRounds
         const cards = pageRounds.filter((x) => x.round !== drag.round)
@@ -13277,6 +13511,7 @@ function GalleryTab2({ onScopeChanged }) {
             h('i', { 'data-pg-swi-track': '' }, h('b', { 'data-pg-swi-knob': '' })),
             h('span', { 'data-pg-swi-r': '' }, '只刷已关注')),
           h('button', { 'data-pg-btn': '', 'data-hue': 'green', 'data-pg-lookupbtn': '', onClick: () => setLookupOpen(true) }, '🌿 画廊检索'),
+          h('button', { 'data-pg-btn': '', 'data-pg-tutbtn': '', title: '第一次用？先看看三种玩法', onClick: () => setTutOpen(true) }, '新手教程❤️'),
           h('button', { 'data-pg-btn': '', 'data-hue': 'red', 'data-pg-feedbackbtn': '', title: '群号、B 站介绍、提 issue 都在这里', onClick: () => setFbOpen(true) }, '🥵 给作者提意见'),
           h('button', { 'data-pg-btn': '', 'data-hue': 'amber', onClick: () => setSettings(true) }, '设置'),
           h('button', { 'data-pg-btn': '', 'data-hue': 'blue', onClick: () => { loadAll(); say('已刷新', 'good') } }, '刷新'))),
@@ -13422,8 +13657,11 @@ function GalleryTab2({ onScopeChanged }) {
         view === 'library' ? h(PgBoundary, null, h(LibraryView2, { say, onCount: setLibCount, onChanged: loadAll, focusWorkId: libFocusId }))
           : h('div', { 'data-pg-collect': '' },
             h('aside', { 'data-pg-collect-side': '' },
-              targetTags.length ? h('div', { 'data-pg-sidegrp': '' },
-                h('div', { 'data-pg-sidehead': '' }, '目标标签', h('span', {}, '正在影响推送')),
+              h('div', { 'data-pg-sidegrp': '' },
+                h('div', { 'data-pg-sidehead': '', 'data-pg-gold': '', title: '点击添加目标标签', onClick: () => setTagPick(true) },
+                  '目标标签',
+                  h('span', { 'data-pg-sidecount': '' }, String(targetTags.length || '')),
+                  h('span', {}, targetTags.length ? '正在影响推送' : '点击添加标签')),
                 ...targetTags.map((t) => {
                   const st = tagMap[String(t).toLowerCase()]
                   const num = st ? String(st.works) + '/' + (st.avg === null || st.avg === undefined ? '—' : st.avg) : '—'
@@ -13436,7 +13674,8 @@ function GalleryTab2({ onScopeChanged }) {
                     },
                     onClick: () => setCollect('all'),
                   }, h('span', {}, '★ ' + t), h('span', { 'data-pg-sideright': '' }, num))
-                })) : null,
+                }),
+                h('button', { 'data-pg-sideadd': '', onClick: () => setTagPick(true) }, targetTags.length ? '＋ 添加目标标签' : '点击添加标签')),
               h('div', { 'data-pg-sidegrp': '' },
                 h('div', { 'data-pg-sidehead': '' }, '卡片筛选'),
                 h('button', { 'data-on': collect === 'all' ? '' : undefined, onClick: () => setCollect('all') }, '全部卡片', h('span', {}, String(rounds?.length ?? ''))),
@@ -13617,7 +13856,7 @@ function GalleryTab2({ onScopeChanged }) {
                           : `${r.dateText || fmt(r.date)} · 已评分 ${r.rated || 0} · 未评分 ${Math.max(0, total - ratedN)} · 已下载 ${r.saved || 0}`),
                         (isRestore || complete) ? null : h(RateBar, { rated: ratedN, total })),
                       fx ? h(DoneFx, { perfect: fx.perfect, text: fx.text, tone: fx.tone }) : null)
-                    })), viewRounds.length > 15 ? h(Pager, { page: roundPg, pages: roundPages, onChange: goRoundPage, total: viewRounds.length, pageSize: 15 }) : null]
+                    })), viewRounds.length > perRoundPage ? h(Pager, { page: roundPg, pages: roundPages, onChange: goRoundPage, total: viewRounds.length, pageSize: perRoundPage }) : null]
                     : Empty({ text: rounds.length ? '没有符合筛选的轮次。' : '还没有任何一轮。' })))),
         openRound ? h(RoundDetail, {
           round: openRound,
@@ -13713,7 +13952,12 @@ function GalleryTab2({ onScopeChanged }) {
             },
           }, '删除卡片（可在回收站找回）'))) : null,
         achQueue.length ? h(AchDialog, { item: ACH_LIST.find((x) => x.id === achQueue[0]) || ACH_LIST[0], onClose: () => setAchQueue((q) => q.slice(1)) }) : null,
-        sumShow ? h('div', { 'data-pg-modal': '', 'data-pg-multisum': '', onClick: closeSum },
+        tagPick ? h(TargetTagPicker, {
+          tags: tagStats, targetTags,
+          onPick: (t) => { api('/tags/target', { tag: t, on: true }).then((r) => { setTargetTags(Array.isArray(r?.targetTags) ? r.targetTags : []); say('已加入目标标签：' + t, 'good') }).catch((e) => say(String(e?.message ?? e), 'warn')) },
+          onClose: () => setTagPick(false),
+        }) : null,
+        sumShow ? h('div', { 'data-pg-modal': '', 'data-pg-multisum': '', 'data-pg-theme': PG_THEME, onClick: closeSum },
           h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation() },
             h('div', { 'data-pg-msumhead': '' },
               h('b', {}, sumShow.title || `跑多轮完成 · ${sumShow.rows.length} 轮`),
@@ -13745,7 +13989,7 @@ function GalleryTab2({ onScopeChanged }) {
             sumShow.slow ? h('div', { 'data-pg-msumnote': '' }, '⚠️ 有轮次明显偏慢：关掉这张总结后，接着给你网络 / VPN / pixiv 限流的诊断和优化建议。') : null,
             h('div', { 'data-pg-achfoot': '' },
               h('button', { 'data-pg-btn': '', 'data-primary': '', onClick: () => { closeSum(); setView('rounds'); setCollect('all'); setQ(''); setRoundPage(1); try { window.scrollTo(0, 0) } catch { /* ignore */ } } }, '去看看新卡片')))) : null,
-        multiAsk ? h('div', { 'data-pg-modal': '', 'data-pg-multiask': '', onClick: () => setMultiAsk(null) },
+        multiAsk ? h('div', { 'data-pg-modal': '', 'data-pg-multiask': '', 'data-pg-theme': PG_THEME, onClick: () => setMultiAsk(null) },
           h('div', { 'data-pg-sheet': '', onClick: (e) => e.stopPropagation() },
             h('div', { 'data-pg-gatetitle': '' }, '跑多轮：一次跑 ' + multiAsk.n + ' 轮'),
             h('div', { 'data-pg-gatenote': '' },
@@ -13992,6 +14236,7 @@ function GalleryTab2({ onScopeChanged }) {
           onRestart: () => { setUpdSheet(null); void pgRestartDsh() },
         }) : null,
         lookupOpen ? h(LookupSheet, { onClose: () => setLookupOpen(false), say, theme: uiTheme }) : null,
+        tutOpen ? h(TutorialSheet, { onClose: () => setTutOpen(false) }) : null,
         fbOpen ? h(FeedbackSheet, { onClose: () => setFbOpen(false), say, theme: uiTheme }) : null,
         profileNudge ? h(ProfileNudge, { theme: uiTheme, onLater: () => answerNudge('later'), onRun: () => answerNudge('run') }) : null,
         blkOpen ? h(BlacklistSheet, {

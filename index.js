@@ -187,7 +187,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.5.8'
+const GALLERY_VERSION = '1.6.0'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -3865,6 +3865,11 @@ const routes = {
         for (const round of Object.keys(st.deletedRounds || {})) {
           if (!all && !wanted.has(round)) continue
           const rec = st.deletedRounds[round] || {}
+          /* 光标记 purged 不够：卡片缩略图还躺在 picks/<round>/thumbs 里，
+             顶栏「待删」会一直算着这块占用永远删不干净。卡片既然从回收站彻底移出，
+             就把它那一份封面缓存一起清掉（轮次数据与评分仍然保留，恢复时按需再取）。
+             已经 purged 的旧记录也要走这一遍，否则老账永远清不掉。 */
+          try { rmSync(join(roundDirOf(round).dir, 'thumbs'), { recursive: true, force: true }) } catch { /* 没缓存也无所谓 */ }
           if (rec.purged) continue
           st.deletedRounds[round] = { ...rec, purged: true, purgedAt: new Date().toISOString() }
           purged += 1
