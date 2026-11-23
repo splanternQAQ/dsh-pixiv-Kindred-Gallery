@@ -187,7 +187,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.6.0'
+const GALLERY_VERSION = '1.6.7'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -2265,7 +2265,7 @@ const markUgoira = (r) => {
           const j = dlJobs.get(String(w.id))
           return !j || j.state === 'fail'
         })
-        .slice(0, 6)
+        .slice(0, 12)
       if (!todo.length) return 0
       setTimeout(() => {
         const st = load()
@@ -2274,7 +2274,7 @@ const markUgoira = (r) => {
         const fileTmpl = String(st.config.fileNameTemplate)
         let netBroken = false
         let skipped = 0
-        mapPool(todo, 2, async (w) => {
+        mapPool(todo, 3, async (w) => {
           if (netBroken) { skipped += 1; return }
           const job = dlJob(w.id)
           job.state = 'run'; job.done = 0; job.total = Math.max(1, Number(w.pageCount || w.pages) || 1); job.at = Date.now()
@@ -2657,7 +2657,67 @@ function maybeQueueQuickDownload(id, score) {
   if (isDownloaded(String(id))) return false
   return queueQuickDownload(id)
 }
-const routes = {
+  /* 卡片/作品库的缩略图与动图循环体在后台先备好：谁被看到谁先下，不挡 /round 响应。 */
+  const prefetchBusy = new Set()
+  const prefetchRoundMedia = (round, items) => {
+    const list = (items || []).filter((it) => it && it.id)
+    if (!list.length) return
+    const key = String(round)
+    if (prefetchBusy.has(key)) return
+    prefetchBusy.add(key)
+    setTimeout(async () => {
+      let done = 0
+      try {
+        const tdir = join(roundDirOf(round).dir, 'thumbs')
+        try { mkdirSync(tdir, { recursive: true }) } catch { /* ignore */ }
+        // 缩略图和动图分开跑：缩略图要快（8 路），动图合成吃 CPU（2 路），不互相堵
+        const thumbs = list.slice()
+        const thumbWorker = async () => {
+          while (thumbs.length) {
+            const it = thumbs.shift()
+            const id = String(it.id)
+            try {
+              const hasThumb = ['.jpg', '.jpeg', '.png', '.webp'].some((ext) => existsSync(join(tdir, id + ext)))
+              if (!hasThumb) {
+                const buf = await thumbImage(home, id)
+                if (buf && buf.length) writeFileSync(join(tdir, id + '.jpg'), Buffer.from(buf))
+              }
+            } catch { /* 取不到就留给前端重试 */ }
+            done += 1
+          }
+        }
+        await Promise.all(Array.from({ length: 8 }, thumbWorker))
+        const anims = list.filter((it) => it.ugoira || localUgoira(String(it.id)))
+        let animDone = 0
+        const animWorker = async () => {
+          while (anims.length) {
+            const it = anims.shift()
+            try {
+              await ensureUgoiraAnim(home, String(it.id), { width: 480, quality: 45 })
+              animDone += 1
+            } catch { /* 合成失败留到下次打开再补 */ }
+          }
+        }
+        await Promise.all(Array.from({ length: 2 }, animWorker))
+        log(`卡片 ${round} 媒体预热完成：缩略图 ${done} 件，动图 ${animDone}/${anims.length} 件`)
+      } catch (e) {
+        log(`卡片 ${round} 媒体预热失败：${e?.message ?? e}`)
+      } finally {
+        prefetchBusy.delete(key)
+      }
+    }, 40)
+  }
+
+  const routes = {
+    /* 本机小模型探活：只从服务端访问 127.0.0.1:11434，避免浏览器 CORS */
+    '/localai/status': {
+      methods: ['POST'],
+      handler: async (q, body) => {
+        const { localAiStatus } = await import('./lib/localai.mjs')
+        const r = await localAiStatus({ endpoint: String(body?.endpoint || ''), model: String(body?.model || '') })
+        return ok(r)
+      },
+    },
     '/follow': {
       methods: ['POST'],
       handler: async (q, body) => {
@@ -3340,8 +3400,15 @@ const routes = {
         if (body.autoDownloadMinScore !== undefined) {
           state.config.autoDownloadMinScore = Math.max(0, Math.min(10, bodyInt(body.autoDownloadMinScore, 9)))
         }
+        /* 优化算法提升：BM25 排序与本地小模型润色，都是可选开关 */
+        if (typeof body.algoBoost === 'boolean') state.config.algoBoost = body.algoBoost
+        if (body.algoHalfLifeDays !== undefined) state.config.algoHalfLifeDays = Math.max(30, Math.min(3650, bodyInt(body.algoHalfLifeDays, 365)))
+        if (typeof body.localAiPolish === 'boolean') state.config.localAiPolish = body.localAiPolish
+        if (body.localAiEndpoint !== undefined) state.config.localAiEndpoint = String(body.localAiEndpoint || '').trim().slice(0, 300)
+        if (body.localAiModel !== undefined) state.config.localAiModel = String(body.localAiModel || '').trim().slice(0, 120)
           if (body.tagWallSize !== undefined) state.config.tagWallSize = Math.max(10, Math.min(200, Math.floor(Number(body.tagWallSize) || 50)))
           if (Array.isArray(body.targetTags)) state.config.targetTags = body.targetTags.map((x) => String(x || '').trim()).filter(Boolean).filter((x) => !isSpecialTagName(x)).slice(0, 50)
+        if (body.targetTagMode !== undefined) state.config.targetTagMode = String(body.targetTagMode).toLowerCase() === 'or' ? 'or' : 'and'
           if (Array.isArray(body.manualTags)) state.config.manualTags = body.manualTags.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 200)
           if (body.dynamicTags && typeof body.dynamicTags === 'object') {
             const cur = state.config.dynamicTags || {}
@@ -3794,6 +3861,10 @@ const routes = {
             dislikeWeight: Number(c.dislikeWeight ?? -1),
           }
         } catch { /* 没配置就按关闭算 */ }
+        rounds = rounds.map((r) => ({
+          ...r,
+          headerUgoira: Boolean(r && r.headerId) && localUgoira(r.headerId),
+        }))
         return ok({ rounds, workspacePath: workspaceDirOf(pixiv), pushMode, order: ord })
       },
     },
@@ -3884,10 +3955,10 @@ const routes = {
       handler: async (q) => {
         const round = String(q.get('round') || '').trim()
         if (!round) return bad(400, '缺少 round')
-        // 打开一轮时顺手跑采集限流（去重 + 同作者次数 + 作者没新作）
-        let rules = null
+        /* 采集限流放到后台：它要访问 pixiv，不能挡着卡片先开出来。 */
+        const rules = null
         if (q.get('noRules') !== '1') {
-          try { rules = await enforceCollect(round) } catch (e) { log(`采集限流失败：${e?.message ?? e}`) }
+          setTimeout(() => { enforceCollect(round).catch((e) => log(`采集限流失败：${e?.message ?? e}`)) }, 30)
         }
         const st = load()
         const libIds = libraryIdSet(pixiv, st)
@@ -3903,6 +3974,7 @@ const routes = {
         })
         // 打开过 = 收集过：记进全局登记，之后任何预设都不会再推它们
         if (markCollected(st, (d.items || []).map((it) => it.id), { round })) save()
+        prefetchRoundMedia(round, d.items)
         return ok({ round: d, rules, scoring: st.config.roundScoring })
       },
     },
@@ -4994,6 +5066,9 @@ const routes = {
       handler: async (q) => {
         const id = String(q.get('id') || '').trim()
         if (!/^\d{1,12}$/.test(id)) return bad(400, 'id 不合法')
+        const cacheDir = join(home, 'thumbs-lib')
+        const cacheFile = join(cacheDir, id + '.jpg')
+        if (existsSync(cacheFile)) return { status: 200, body: readFileSync(cacheFile), type: 'image/jpeg', cache: 'public, max-age=86400' }
         try {
           const dir = findDirById(id)
           if (dir) {
@@ -5004,7 +5079,10 @@ const routes = {
             }
           }
           const buf = await thumbImage(home, id)
-          if (buf && buf.length) return { status: 200, body: buf, type: 'image/jpeg', cache: 'no-cache' }
+          if (buf && buf.length) {
+            try { mkdirSync(cacheDir, { recursive: true }); writeFileSync(cacheFile, Buffer.from(buf)) } catch { /* 缓存写不进就照常返回 */ }
+            return { status: 200, body: buf, type: 'image/jpeg', cache: 'public, max-age=86400' }
+          }
         } catch { /* ignore */ }
         return { status: 404, body: Buffer.alloc(0), type: 'text/plain' }
       },
@@ -5780,6 +5858,26 @@ const routes = {
       },
     },
     /** 把作品库里所有已收集动图的整段 webp 补进作品目录（前端进作品库时静默调用） */
+    /**
+     * Library cover animation: 300px / 8fps / q33, small enough for grids.
+     */
+    '/ugoira-cover': {
+      methods: ['GET'],
+      handler: async (q) => {
+        const id = String(q.get('id') || '').trim()
+        if (!/^\d{1,12}$/.test(id)) return bad(400, 'bad id')
+        const file = join(home, 'ugoira', id, 'cover.webp')
+        if (!existsSync(file)) {
+          try {
+            await ensureUgoiraAnim(home, id, { cover: true, width: 300, quality: 33, fps: 8 })
+          } catch (e) {
+            return bad(502, String(e?.message ?? e).slice(0, 160))
+          }
+        }
+        const res = sendFile(file)
+        return { ...res, type: 'image/webp', cache: 'public, max-age=31536000, immutable' }
+      },
+    },
     '/ugoira/backfill': {
       methods: ['POST'],
       handler: async (q, body) => ok(await backfillAnims(pixiv, Math.min(8, Math.max(1, bodyInt(body?.limit, 3))))),
@@ -6308,10 +6406,30 @@ const routes = {
       handler: async (q) => {
         const name = safeName(q.get('name') || '', 110)
         if (!name) return bad(400, '缺少 name')
+        const w = bodyInt(q.get('w'), 360)
+        const cached = (id) => {
+          const f = join(home, 'thumbs-lib', String(id) + '.jpg')
+          return existsSync(f) ? serveThumb(f, w) : null
+        }
         const dir = resolveWorkDir(name)
-        if (!dir) return bad(404, '作品不存在')
-        const f = extOfImage(dir, '')
-        return f ? serveThumb(f, bodyInt(q.get('w'), 360)) : { status: 404, body: Buffer.alloc(0), type: 'text/plain' }
+        if (dir) {
+          const f = extOfImage(dir, '')
+          if (f) return serveThumb(f, w)
+        }
+        /* 没下原图的作品：优先用预先批量缓存的缩略图，避免现场等 Pixiv */
+        const id = (String(name).match(/(\d{4,12})$/) || [])[1]
+        if (id) {
+          const hit = cached(id)
+          if (hit) return hit
+          try {
+            const d2 = findDirById(id)
+            if (d2) {
+              const f2 = extOfImage(d2, '')
+              if (f2) return serveThumb(f2, w)
+            }
+          } catch { /* ignore */ }
+        }
+        return { status: 404, body: Buffer.alloc(0), type: 'text/plain' }
       },
     },
 
