@@ -39,7 +39,7 @@ import {
   /** AI 标记 */ AI_COLLECTION, isAiTags,
   /** 收藏夹置顶 */ collectionPin, collectionPinOrder, collectionSwap, collectionOrder,
 } from './lib/gallery.mjs'
-import { depsSnapshot, chromeExe, pixivScrollDir, playwrightCoreDir } from './lib/deps.mjs'
+import { depsSnapshot, chromeExe, pixivScrollDir, playwrightCoreDir, loginPlaywrightStatus, installPlaywrightCore } from './lib/deps.mjs'
 
 /** 刷Pixiv 是否真的作为插件被 DSH 加载（profile node_modules 里有它），而不是只剩源码目录 */
 function pixivPluginLoaded() {
@@ -187,7 +187,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.6.8'
+const GALLERY_VERSION = '1.7.0'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -311,6 +311,8 @@ function makeApi(deps) {
   // 让 pixivpages 用刷Pixiv 的登录 cookie 取分页图（sl=6 的 R-18 不带 cookie 会 404）
   setCredentialSource(pixiv)
   const cfgFile = join(home, 'gallery.json')
+  /* 浏览器登录 / 获取 token 的后台任务（只活在这一进程里） */
+  const loginJobs = new Map()
 
   const load = () => stateRef.state
   /* 设置页/主界面开场会连着 GET /config 好几次，原来每次都全盘扫一遍作品目录（1.5GB，2 秒级），
@@ -3208,6 +3210,118 @@ function maybeQueueQuickDownload(id, score) {
       },
     },
 
+    /* ── 登录依赖自检：没装 playwright-core 的用户，账号密码登录会直接失败 ── */
+    '/logout': {
+      methods: ['POST'],
+      handler: async () => {
+        try { rmSync(join(pixiv, 'credential.json'), { force: true }) } catch { /* ignore */ }
+        try {
+          const cfgPath = join(pixiv, 'config.json')
+          const cfg = readJson(cfgPath, {})
+          cfg.authState = ''
+          cfg.pixivId = ''
+          writeJson(cfgPath, cfg)
+        } catch { /* ignore */ }
+        log('已退出 pixiv 登录（credential.json 已删除）')
+        return ok({ ok: true })
+      },
+    },
+    '/login/deps': {
+      methods: ['GET'],
+      handler: () => {
+        const st = loginPlaywrightStatus()
+        return ok({
+          ok: st.ok,
+          dir: st.dir || '',
+          scroll: st.scroll || '',
+          own: st.own,
+          error: st.ok ? '' : (st.scroll ? '刷Pixiv 目录里缺少 playwright-core，账号密码登录不可用' : '没装刷Pixiv 插件，无法使用浏览器登录'),
+        })
+      },
+    },
+    '/login/deps/install': {
+      methods: ['POST'],
+      handler: async () => {
+        const r = await installPlaywrightCore({ log })
+        return ok({ ok: r.ok, dir: r.dir || '', cwd: r.cwd || '', error: r.error || '', log: r.log || '' })
+      },
+    },
+    /* ── 浏览器登录获取 refresh_token：复用刷Pixiv 的完整 OAuth 流程 ── */
+    '/login/browser/start': {
+      methods: ['POST'],
+      handler: async () => {
+        const scroll = pixivScrollDir()
+        if (!scroll) return bad(400, '没装刷Pixiv 插件，拿不到浏览器登录流程')
+        const dep = loginPlaywrightStatus()
+        if (!dep.ok) {
+          const fixed = await installPlaywrightCore({ log })
+          if (!fixed.ok) return bad(400, '登录组件装不上：' + (fixed.error || '未知原因'))
+        }
+        const jobId = 'lb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+        loginJobs.set(jobId, { state: 'running', step: '正在启动浏览器…', at: Date.now() })
+        ;(async () => {
+          try {
+            const mod = await import(pathToFileURL(join(scroll, 'lib', 'login-pixiv.mjs')).href)
+            const r = await mod.loginWithBrowser({
+              mode: 'edge',
+              pixivId: '',
+              password: '',
+              home: pixiv,
+              onStep: (step) => {
+                const j = loginJobs.get(jobId)
+                if (j) { j.step = String(step || ''); j.at = Date.now() }
+              },
+            })
+            const j = loginJobs.get(jobId)
+            if (!j) return
+            if (r.ok) {
+              j.state = 'ok'
+              j.step = '已拿到 refresh_token'
+              let cred = r.credential || {}
+              try { cred = { ...cred, ...JSON.parse(readFileSync(join(pixiv, 'credential.json'), 'utf8')) } } catch {}
+              j.refreshToken = cred.refreshToken || ''
+              j.pixivId = cred.pixivId || ''
+              j.userId = cred.userId || ''
+              try {
+                const pc = readJson(join(pixiv, 'config.json'), {})
+                pc.authState = 'ok'
+                if (j.pixivId) pc.pixivId = j.pixivId
+                if (j.userId) pc.userId = j.userId
+                writeJson(join(pixiv, 'config.json'), pc)
+              } catch {}
+              log('浏览器登录成功：' + (j.pixivId || j.userId || 'pixiv 账号'))
+            } else {
+              j.state = 'failed'
+              j.step = ''
+              j.error = r.message || r.state || '登录失败'
+              log('浏览器登录失败：' + j.error)
+            }
+          } catch (e) {
+            const j = loginJobs.get(jobId)
+            if (j) { j.state = 'failed'; j.error = String(e?.message ?? e); j.step = '' }
+            log('浏览器登录异常：' + String(e?.message ?? e))
+          } finally {
+            setTimeout(() => loginJobs.delete(jobId), 10 * 60 * 1000).unref?.()
+          }
+        })()
+        return ok({ jobId })
+      },
+    },
+    '/login/browser/poll': {
+      methods: ['GET'],
+      handler: (q) => {
+        const j = loginJobs.get(String(q.get('jobId') || ''))
+        if (!j) return bad(404, '登录任务不存在或已过期，请重试')
+        return ok({
+          state: j.state,
+          step: j.step || '',
+          error: j.error || '',
+          refreshToken: j.refreshToken || '',
+          pixivId: j.pixivId || '',
+          userId: j.userId || '',
+        })
+      },
+    },
     '/deps/install': {
       methods: ['POST'],
       handler: async (body) => { const r = await installPixivPlugin(body && body.repo); return r.ok ? ok(r) : bad(400, r.error || '安装失败', { steps: r.steps }) },
@@ -3220,12 +3334,14 @@ function maybeQueueQuickDownload(id, score) {
         const pixivDep = (() => {
           const configExists = existsSync(join(pixiv, 'config.json'))
           const credentialExists = existsSync(join(pixiv, 'credential.json'))
-          const authState = String(cfg?.authState || '')
+          const cred = credentialExists ? readJson(join(pixiv, 'credential.json'), {}) : {}
+          const authState = String(cfg?.authState || (cred && cred.refreshToken ? 'ok' : ''))
           return {
             home: pixiv,
             configExists,
             credentialExists,
             authState,
+            pixivId: String(cfg?.pixivId || cred?.pixivId || ''),
             pluginDir: pixivScrollDir(),
             pluginInstalled: pixivPluginLoaded(),
             ok: configExists && credentialExists && authState === 'ok',
@@ -3323,7 +3439,8 @@ function maybeQueueQuickDownload(id, score) {
         const pixivDepInfo = (() => {
           const configExists = existsSync(join(pixiv, 'config.json'))
           const credentialExists = existsSync(join(pixiv, 'credential.json'))
-          const authState = String(pcfg?.authState || '')
+          const cred = credentialExists ? readJson(join(pixiv, 'credential.json'), {}) : {}
+          const authState = String(pcfg?.authState || (cred && cred.refreshToken ? 'ok' : ''))
           return { home: pixiv, configExists, credentialExists, authState, pluginDir: pixivScrollDir(), pluginInstalled: pixivPluginLoaded(), ok: configExists && credentialExists && authState === 'ok', repo: 'https://github.com/kuroshio4396/dafayu-pixiv-duty' }
         })()
         const withRuntime = () => {
@@ -3401,6 +3518,9 @@ function maybeQueueQuickDownload(id, score) {
           state.config.autoDownloadMinScore = Math.max(0, Math.min(10, bodyInt(body.autoDownloadMinScore, 9)))
         }
         /* 优化算法提升：BM25 排序与本地小模型润色，都是可选开关 */
+        if (typeof body.libAnimFx === 'boolean') state.config.libAnimFx = body.libAnimFx
+        if (typeof body.libBacklight === 'boolean') state.config.libBacklight = body.libBacklight
+        if (body.libAnimCount !== undefined) state.config.libAnimCount = Math.max(0, Math.min(12, bodyInt(body.libAnimCount, 3)))
         if (typeof body.algoBoost === 'boolean') state.config.algoBoost = body.algoBoost
         if (body.algoHalfLifeDays !== undefined) state.config.algoHalfLifeDays = Math.max(30, Math.min(3650, bodyInt(body.algoHalfLifeDays, 365)))
         if (typeof body.localAiPolish === 'boolean') state.config.localAiPolish = body.localAiPolish
@@ -4969,6 +5089,8 @@ function maybeQueueQuickDownload(id, score) {
         const round = String(q.get('round') || '').trim()
         const id = String(q.get('id') || '').trim()
         if (!round || !id) return bad(400, '缺少 round/id')
+        const wantW = bodyInt(q.get('w'), 0)
+        const out = (f) => (wantW > 0 ? serveThumb(f, wantW) : sendFile(f))
         try {
           const t = load()?.trash?.[round]?.[id]
           if (t && !t.purged) {
@@ -4978,7 +5100,7 @@ function maybeQueueQuickDownload(id, score) {
             for (const nm of names) {
               const f = resolve(join(tdir, 'thumbs', nm))
               if (!(f.startsWith(base + '\\') || f.startsWith(base + '/'))) continue
-              if (existsSync(f)) return sendFile(f)
+              if (existsSync(f)) return out(f)
             }
           }
         } catch { /* ignore */ }
@@ -4995,21 +5117,21 @@ function maybeQueueQuickDownload(id, score) {
            本地没缓存就现取一张缩略图，顺手写进这一轮的 thumbs/，下次直接命中磁盘。 */
         if (item.cover) {
           const f = extOfImage(join(dir, 'thumbs'), safeFile(item.cover))
-          if (f) return sendFile(f)
+          if (f) return out(f)
         }
         for (const ext of ['.jpg', '.jpeg', '.png', '.webp']) {
           const f = join(dir, 'thumbs', `${id}${ext}`)
-          if (existsSync(f)) return sendFile(f)
+          if (existsSync(f)) return out(f)
         }
         const saved = item.dir ? join(item.dir) : ''
         if (saved && existsSync(saved)) {
           const f = extOfImage(saved, '')
-          if (f) return sendFile(f)
+          if (f) return out(f)
         }
         const pending = pendingDirOf(item)
         if (pending && existsSync(pending)) {
           const f = extOfImage(pending, '')
-          if (f) return sendFile(f)
+          if (f) return out(f)
         }
         /* 还是没有：现取一次（R-18 也照取），写进这一轮 thumbs/ 再回给页面 */
         try {
@@ -5413,7 +5535,17 @@ function maybeQueueQuickDownload(id, score) {
         const images = Array.isArray(body?.images) ? body.images.slice(0, 8) : []
         const history = Array.isArray(body?.history) ? body.history.slice(-8) : []
         try {
-          const r = await (await loadVision()).askGallery(ctx, { config: load().config || {}, question, images, history })
+          let catalog = ''
+          try {
+            const st0 = load()
+            const ws = Object.values(st0.library || {})
+            const tagCount = new Map()
+            let dl = 0
+            for (const w of ws) { if (w && w.downloaded) dl += 1; for (const t of (Array.isArray(w?.tags) ? w.tags : [])) tagCount.set(t, (tagCount.get(t) || 0) + 1) }
+            const top = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([t, n]) => t + '×' + n).join('、')
+            catalog = '作品库 ' + ws.length + ' 件（已下载原图 ' + dl + ' 件）；高频标签：' + (top || '暂无')
+          } catch { /* ignore */ }
+          const r = await (await loadVision()).askGallery(ctx, { config: load().config || {}, question, images, history, catalog })
           return r.ok ? ok(r) : bad(502, r.error || '模型没回答')
         } catch (e) {
           return bad(500, String(e?.message ?? e).slice(0, 240))
@@ -5444,6 +5576,12 @@ function maybeQueueQuickDownload(id, score) {
           return { status: 200, body: got.buffer, type: 'image/jpeg', cache: 'no-cache', headers: { 'x-page': String(page) } }
         } catch (e) {
           const msg = String(e?.message ?? e)
+          if (page === 0) {
+            try {
+              const tp = join(home, 'thumbs-lib', id + '.jpg')
+              if (existsSync(tp)) return sendFile(tp)
+            } catch { /* ignore */ }
+          }
           if (/HTTP 429|Just a moment|rate limit/i.test(msg)) {
             return { status: 503, body: Buffer.from('pixiv 正在限流（429），等一会儿再试。', 'utf8'), type: 'text/plain; charset=utf-8', headers: { 'x-busy': '1' } }
           }
@@ -6314,6 +6452,48 @@ function maybeQueueQuickDownload(id, score) {
       },
     },
 
+    '/library/repair': {
+      methods: ['POST'],
+      handler: async () => {
+        const st = load()
+        const list = markUgoira(listLibraryCached(pixiv, st, { extraRoot: join(home, 'Download') }))
+        const works = list.works || []
+        const tdir = join(home, 'thumbs-lib')
+        try { mkdirSync(tdir, { recursive: true }) } catch { /* ignore */ }
+        const report = { total: works.length, missingOriginal: 0, fixedThumb: 0, missingThumb: 0, fixedCover: 0, missingPages: 0, duplicates: 0 }
+        const needThumb = []
+        const seen = new Set()
+        for (const w of works) {
+          const id = String(w.id || '').trim()
+          if (!w.downloaded) report.missingOriginal += 1
+          if (w.downloaded && w.dir && existsSync(w.dir)) {
+            const files = imageFilesOfWork(w.dir).length
+            const pages = Number(w.pageCount || w.pages || 0)
+            if (pages > 0 && files < pages) report.missingPages += pages - files
+          }
+          const key = id || String(w.name || '')
+          if (key) { if (seen.has(key)) report.duplicates += 1; else seen.add(key) }
+          if (id) {
+            const tp = join(tdir, id + '.jpg')
+            if (!existsSync(tp)) needThumb.push(w)
+          }
+        }
+        await mapPool(needThumb, 6, async (w) => {
+          const id = String(w.id || '').trim()
+          try {
+            const buf = await thumbImage(home, id)
+            if (buf && buf.length) { writeFileSync(join(tdir, id + '.jpg'), Buffer.from(buf)); report.fixedThumb += 1 }
+            else report.missingThumb += 1
+          } catch { report.missingThumb += 1 }
+        })
+        const needCover = works.filter((w) => w.ugoira && w.id && !existsSync(join(home, 'ugoira', String(w.id), 'cover.webp')))
+        await mapPool(needCover.slice(0, 80), 3, async (w) => {
+          try { await ensureUgoiraAnim(home, String(w.id), { cover: true, width: 300, quality: 33, fps: 8 }); report.fixedCover += 1 } catch { /* ignore */ }
+        })
+        return ok(report)
+      },
+    },
+
     /**
      * 同步作品在 pixiv 上的「分级 + 我收藏了没」。
      * 元数据文件里没有收藏状态，只能问 pixiv；结果缓存在 gallery.json 的 workMarks。
@@ -6442,7 +6622,14 @@ function maybeQueueQuickDownload(id, score) {
         const dir = resolveWorkDir(name)
         if (!dir) return bad(404, '作品不存在')
         const f = join(dir, file)
-        if (!existsSync(f) || !isInside(dir, f)) return bad(404, '文件不存在')
+        if (!existsSync(f) || !isInside(dir, f)) {
+          const id = (String(name).match(/(\d{4,12})$/) || [])[1]
+          if (id) {
+            const tp = join(home, 'thumbs-lib', id + '.jpg')
+            if (existsSync(tp)) { const w0 = bodyInt(q.get('w'), 0); return w0 > 0 ? serveThumb(tp, w0) : sendFile(tp) }
+          }
+          return bad(404, '文件不存在')
+        }
         const w = bodyInt(q.get('w'), 0)
         return w > 0 ? serveThumb(f, w) : sendFile(f)
       },
@@ -7770,6 +7957,17 @@ export function apply(ctx) {
   try { setDirectImageEnabled(load().config?.imageDirect !== false) } catch { /* ignore */ }
 
   log(`激活：home=${home} pixiv=${pixiv}`)
+  /* 安装即检查登录组件：缺 playwright-core 时后台补装，避免用户走到账密登录才报错 */
+  setTimeout(() => {
+    try {
+      const st = loginPlaywrightStatus()
+      if (st.ok) return
+      log('登录组件检查：缺少 playwright-core，开始后台安装')
+      installPlaywrightCore({ log }).then((r) => {
+        log(r.ok ? '登录组件检查：已补齐 ' + r.dir : '登录组件检查：安装失败（可到设置页点「一键安装登录组件」）')
+      })
+    } catch (e) { log('登录组件检查异常：' + String(e?.message ?? e)) }
+  }, 2500)
   // 作品库与下载统一住画廊家目录，不再依赖刷Pixiv 插件的 all_works；装上就把目录建好
   try {
     setGalleryHome(home)

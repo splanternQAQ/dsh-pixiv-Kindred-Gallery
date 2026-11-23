@@ -4,7 +4,7 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.6.8-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.7.0-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)
@@ -281,11 +281,20 @@ DSH 插件与宿主 DSH **跑在同一个进程里**，插件本身没有独立�
 - [dafayu-pixiv-duty](https://github.com/kuroshio4396/dafayu-pixiv-duty) —— 作者 **阳炎级三番舰黑潮**；「刷Pixiv」的跑一轮、预览页、点头下载都是他先走通的路。
 - [dsh-bili-scroll](https://github.com/c1overzz/dsh-bili-scroll) —— 作者 **凌羽clover**；刷B站、刷P站这些让大肥鱼来做，是他带头掀起这一波热潮的，真是一番热闹的景象（好多鱼）。
 
+后来的算法、下载、渲染与检索，也参考了这些开源项目（排名不分先后）：
+
+- 推荐与标签：[implicit](https://github.com/benfred/implicit)、[LightFM](https://github.com/lyst/lightfm)、[TagRec](https://github.com/learning-layers/TagRec)、[RecBole](https://github.com/RUCAIBox/RecBole)
+- 下载与动图：[Ghost-Downloader-3](https://github.com/XiaoYouChR/Ghost-Downloader-3)、[aria2](https://github.com/aria2/aria2)、[pixiv/zip_player](https://github.com/pixiv/zip_player)、[PixivBatchDownloader](https://github.com/xuejianxianzun/PixivBatchDownloader)、[PixivPreviewer](https://github.com/Ocrosoft/PixivPreviewer)
+- 渲染与性能：[TanStack Virtual](https://github.com/TanStack/virtual)、[react-window](https://github.com/bvaughn/react-window)、[masonic](https://github.com/jaredLunde/masonic)、[sharp](https://github.com/lovell/sharp)、[modern-web-guidance](https://github.com/GoogleChrome/modern-web-guidance-src)
+- 检索与提示词：[MiniSearch](https://github.com/lucaong/minisearch)、[Fuse.js](https://github.com/krisk/Fuse)、[compromise](https://github.com/spencermountain/compromise)、[LangChain.js](https://github.com/langchain-ai/langchainjs)、[LlamaIndex.TS](https://github.com/run-llama/LlamaIndexTS)
+
+插件里的「算法优化帮助」弹窗有完整的分组致谢墙。
+
 谢谢他们提供灵感。
 
 ## 作者的话
 
-> 我自己全程依靠 vibecoding 用 DeepSeek-V4.1-Flash 这个模型独立完成了软件的初版开发和各种想法的实现，希望有志同道合之士跟我一起完善维护这个项目。
+> 这个插件的初版是我一个人用 DeepSeek-V4.1-Flash 与 Qwen3.8 MAX 花了大概 12 天打磨出来的。到了 v1.6 后才反应过来其实可以多借鉴其他人的做法，感谢每一个提供支持的开源仓库，感谢传承开源精神的每个人。最初只是不满足于脚本抓图，后来才变成了如今的模样。如果有同好愿意一起维护，随时欢迎加入~觉得好用的话点个 Star 吧~
 >
 > —— 春灯笼
 
@@ -296,6 +305,33 @@ MIT。刷Pixiv 插件另见其自身仓库与许可。
 ---
 
 ## 更新日志（倒序）
+
+### v1.7.0 · 2026-11-24 07:42:00
+
+**登录与账号**
+- 启动时自检 playwright-core；缺了自动补装到刷Pixiv 目录，设置里也有「一键安装登录组件」。
+- 新增「没有 p 站账号？点击注册」入口。
+- 新增「获取 Token」：复用刷Pixiv 的持久浏览器窗口，完成授权后自动把 refresh_token 写进 credential.json。
+- 新增「退出登录」，清掉凭证与登录态。
+
+**设置页**
+- 「连接 Pixiv」「画廊运行测试」升为一级标题，七个一级标题都有独立色框与折叠三角；默认收起下载相关、跑多轮、子菜单设置。
+- 个人偏好预设的名称输入框移到按钮行，不再压住当前预设时间。
+- 单手操作设置改成高对比说明与暖金键帽，浅色主题用米黄底深棕字。
+- 「优化算法提升」改名「算法优化帮助」，只保留致谢墙；排序功能默认开启，不再暴露开关与半衰期。
+- 新增 5 组 23 个开源仓库的致谢墙，作者的话与 README 同步。
+
+**作品库与性能**
+- 卡片缩略图改走 360px 缓存，一页 16 张从约 11MB 降到约 272KB。
+- 动图封面只在悬停时播放，同屏最多 3 个；新增动图类型筛选与动画开关。
+- 离屏卡片跳过炫彩/流光动画，滚动时暂停动图解码与外发光。
+- 新增「自动检查整理」：补缩略图、补封面、诊断打不开的作品。
+- 修正同作品差分重复显示，合并为一张并标注「差分×N」；炫彩环紧贴卡片外沿。
+- 修复作品库「pageWorks before initialization」白屏、切页回顶、底部空白等问题。
+
+**关于与安装**
+- 新增灵感来源横幅与开源致谢墙。
+- 安装：把仓库地址 `https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery` 直接发给 DSH，让它自己下载安装即可。
 
 ### v1.6.8 · 2026-11-23 20:22:00
 

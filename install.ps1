@@ -1,4 +1,4 @@
-# Pixiv 知心画廊 一键安装（Windows / PowerShell）
+﻿# Pixiv 知心画廊 一键安装（Windows / PowerShell）
 #
 # 先看一眼再执行（推荐）：
 #   $s = irm https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery/raw/main/install.ps1
@@ -10,11 +10,12 @@
 #   $s | iex
 # （用 PowerShell 7 时也可以先存盘再传参：pwsh -File .\install.ps1 -InstallDir 'C:\MyPlugins'）
 #
-# 本脚本只做四件事，全部写在下面，可以逐行核对：
+# 本脚本只做五件事，全部写在下面，可以逐行核对：
 #   1) 从 codeload.github.com 下载仓库 zip（纯下载：不执行 zip 里的任何代码/脚本）
 #   2) 解压到安装目录；旧版本改名成 .bak-时间 留着，不删
 #   3) 往 profile 的 package.json 加一条 link: 依赖和一个 bundles 名字（改前先存 .bak 备份）
 #   4) 在 profile 的 node_modules 里建一个 Junction（目录联接）指向安装目录
+#   5) 检查 playwright-core（账号密码登录要用）；缺了就装到刷Pixiv 目录里
 #
 # 它不需要管理员权限，也不写注册表、不装服务、不设开机自启、不改系统环境变量。
 # 数据目录（评分 / 偏好 / 缩略图 / 轮次记录）在 %USERPROFILE%\.dsh\dsh-pixiv-Kindred-Gallery，
@@ -136,6 +137,35 @@ New-Item -ItemType Junction -Path $target -Target $dest | Out-Null
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
+Write-Host '==> 检查登录组件 playwright-core' -ForegroundColor Cyan
+$npmCmd = 'npm'
+$npmCmdPath = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if ($npmCmdPath) { $npmCmd = $npmCmdPath.Source }
+$scrollSibling = $null
+$scrollCandidates = @(
+  (Join-Path $destRoot 'dsh-pixiv-scroll'),
+  (Join-Path $profileDir 'node_modules\dsh-pixiv-scroll'),
+  'D:\Deepseek_Plugins\dsh-pixiv-scroll',
+  (Join-Path $env:USERPROFILE 'Deepseek_Plugins\dsh-pixiv-scroll')
+)
+foreach ($c in $scrollCandidates) {
+  if ($c -and (Test-Path (Join-Path $c 'package.json'))) { $scrollSibling = $c; break }
+}
+if ($scrollSibling) {
+  $pwPkg = Join-Path $scrollSibling 'node_modules\playwright-core\package.json'
+  if (Test-Path $pwPkg) { Write-Host "   已就绪：$scrollSibling" -ForegroundColor DarkGray }
+  else {
+    Write-Host "   缺少 playwright-core，正在安装到 $scrollSibling （约 10–60 秒）…"
+    Push-Location $scrollSibling
+    try { & $npmCmd install 'playwright-core@^1.61.1' --omit=dev --no-audit --no-fund --registry=https://registry.npmmirror.com }
+    catch { Write-Host "   安装失败：$($_.Exception.Message)" -ForegroundColor Yellow }
+    finally { Pop-Location }
+    if (Test-Path $pwPkg) { Write-Host '   登录组件已就绪' -ForegroundColor Green }
+    else { Write-Host '   仍缺 playwright-core：打开画廊设置 → 登录框 →「一键安装登录组件」再试' -ForegroundColor Yellow }
+  }
+}
+if (-not $scrollSibling) { Write-Host '   还没装刷Pixiv，等装好后再检查（画廊设置里有「一键安装」）' -ForegroundColor DarkGray }
+
 Write-Host '装好了。' -ForegroundColor Green
 Write-Host '下一步：重启 DSH → 打开「知心画廊」→ 设置 → 点「一键安装」装刷Pixiv → 再重启一次 → 登录 pixiv 账号（token 或账号密码）。'
 Write-Host '卸载：删掉 profile package.json 里的依赖与 bundles 条目，再删掉上面那个安装目录即可（数据目录可以留着）。'
