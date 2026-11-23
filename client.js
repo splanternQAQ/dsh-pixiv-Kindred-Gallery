@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.6.7'
+    const CLIENT_BUILD = '1.6.8'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -2567,6 +2567,14 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-theme="light"] [data-pg-collect-side] [data-pg-sidetarget]{color:#eab308;border-color:rgba(234,179,8,.85);}
 [data-pg-theme="light"] [data-pg-collect-side] [data-pg-sidetarget]:hover{background:rgba(234,179,8,.14);border-color:#eab308;}
 [data-pg-theme="light"] [data-pg-collect-side] [data-pg-sidetarget] [data-pg-sideright]{color:#eab308;}
+/* 作品库侧栏：与主界面目标标签胶囊同一套样式，直接复用 */
+[data-pg-side] [data-pg-sidetarget]{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:3px 2px;padding:8px 13px;font-size:14.5px;font-weight:800;letter-spacing:.02em;color:#fde047;background:transparent;border:1.5px solid rgba(250,204,21,.72);border-radius:999px;box-shadow:none;}
+[data-pg-side] [data-pg-sidetarget]:hover{background:rgba(250,204,21,.12);border-color:#fde047;}
+[data-pg-side] [data-pg-sidetarget] > span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+[data-pg-side] [data-pg-sidetarget] [data-pg-sideright]{font-size:12px;font-weight:800;color:#fde047;opacity:.9;}
+[data-pg-theme="light"] [data-pg-side] [data-pg-sidetarget]{color:#eab308;border-color:rgba(234,179,8,.85);}
+[data-pg-theme="light"] [data-pg-side] [data-pg-sidetarget]:hover{background:rgba(234,179,8,.14);border-color:#eab308;}
+[data-pg-theme="light"] [data-pg-side] [data-pg-sidetarget] [data-pg-sideright]{color:#eab308;}
 [data-pg-collect-side] button[data-pg-sideempty]{margin:2px 2px 8px;padding:8px 12px;border:1.5px dashed rgba(250,204,21,.6);border-radius:999px;background:transparent;color:#fde047;font-size:13.5px;font-weight:800;letter-spacing:.02em;}
 [data-pg-collect-side] button[data-pg-sideempty]:hover{border-color:rgba(250,204,21,.8);color:#facc15;background:rgba(250,204,21,.06);}
 [data-pg-theme="light"] [data-pg-collect-side] button[data-pg-sideempty]{color:#a16207;border-color:rgba(202,138,4,.65);}
@@ -2636,7 +2644,7 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-lib-card] .lc img{width:100%;height:100%;object-fit:cover;display:block;}
 [data-pg-lib-card] .lb{padding:6px 8px 8px;display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:hidden;transition:max-height .28s cubic-bezier(.4,0,.2,1),opacity .2s ease,padding .28s ease;}
 [data-pg-lib-grid][data-pg-pure] [data-pg-lib-card] .lb{max-height:0;opacity:0;padding-top:0;padding-bottom:0;pointer-events:none;}
-[data-pg-variantbadge]{position:absolute;right:6px;top:6px;z-index:3;padding:2px 6px;border-radius:999px;background:rgba(15,23,42,.72);color:#fde68a;font-size:10px;font-weight:800;letter-spacing:.02em;backdrop-filter:blur(3px);pointer-events:none;}
+[data-pg-variantbadge]{position:absolute;left:6px;bottom:6px;top:auto;right:auto;z-index:3;padding:2px 6px;border-radius:999px;background:rgba(15,23,42,.72);color:#fde68a;font-size:10px;font-weight:800;letter-spacing:.02em;backdrop-filter:blur(3px);pointer-events:none;}
 [data-pg-lib-card] .lt{font-size:14px;line-height:19px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-weight:800;}
 [data-pg-lib-card] .ln{font-size:10.5px;color:var(--dsw-alias-label-tertiary,#8b919a);}
 [data-pg-lib-card] .la{font-size:12px;font-weight:650;line-height:16px;color:#93c5fd;opacity:.95;}
@@ -6440,7 +6448,7 @@ const pgAutoFitCount = (gridSel, cardSel, gap, reserve, minRows, minCount, maxCo
 const pgPageBounds = (kind) => {
   const grid = document.querySelector(kind === 'library' ? '[data-pg-lib-grid]' : '[data-pg-grid]')
   const w = Number(grid && grid.clientWidth) || Number(window.innerWidth) || 1280
-  if (kind === 'library') return w >= 980 ? [36, 120] : w >= 780 ? [24, 120] : w >= 620 ? [12, 60] : [8, 36]
+  if (kind === 'library') return w >= 980 ? [36, 200] : w >= 780 ? [24, 200] : w >= 620 ? [12, 80] : [8, 48]
   return w >= 980 ? [16, 16] : w >= 760 ? [8, 16] : [4, 16]
 }
 function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
@@ -6458,6 +6466,7 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       const [libPage, setLibPage] = React.useState(1)
   // 纯图模式：只留封面，一页 30 张（主人 2026-11-20 要）
   const [pure, setPure] = React.useState(() => { try { return localStorage.getItem('pixiv-gallery.pure') === '1' } catch { return false } })
+  const pureBaseRef = React.useRef(0)
   const [sideFold, setSideFold] = React.useState(() => { try { return JSON.parse(localStorage.getItem('pixiv-gallery.sidefold') || '{}') || {} } catch { return {} } })
   const toggleFold = (k) => setSideFold((old) => { const next = { ...(old || {}), [k]: !(old || {})[k] }; try { localStorage.setItem('pixiv-gallery.sidefold', JSON.stringify(next)) } catch { /* ignore */ } return next })
   /* 自适应分页：一页塞满可视区域，并限制在 12–36；量不到时退回 12 */
@@ -6694,7 +6703,9 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
       React.useEffect(() => {
         const calc = () => {
           const b = pgPageBounds('library')
-          const n = pgAutoFitCount('[data-pg-lib-grid]', '[data-pg-lib-card]', 10, 58, 2, b[0], b[1])
+          let n = pgAutoFitCount('[data-pg-lib-grid]', '[data-pg-lib-card]', 10, 58, 2, b[0], b[1])
+          if (pure) n = Math.max(n, Math.ceil((pureBaseRef.current || n) * 1.25))
+          n = Math.min(200, Math.max(1, n || 12))
           if (n) setAutoPage((old) => (Math.abs(old - n) < 2 ? old : n))
         }
         calc()
@@ -7327,6 +7338,8 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
         return '[画廊]' + libPg + '_' + (t0 || '本页作品') + '『春』.7z'
       })()
       const wcount = pageSliceNow().length
+      const halfCount = Math.max(1, Math.ceil(wcount / 2))
+      const pureProjected = pure ? wcount : Math.min(works.length, Math.max(wcount + 1, Math.ceil(wcount * 1.25)))
       const copyPageFiles = async (from = 0, take = 10) => {
         const size = pageSize
         const full = works.slice((libPg - 1) * size, libPg * size)
@@ -7541,18 +7554,18 @@ function LibraryView2({ say, onCount, onChanged, focusWorkId = null }) {
             h('button', { 'data-pg-btn': '', 'data-on': multi ? '' : undefined, onClick: () => (multi ? exitMulti() : setMulti(true)) }, multi ? '退出多选' : '多选'),
             h('div', { 'data-pg-libpager': '' },
               h('button', { 'data-pg-btn': '', 'data-pg-libprev': '', disabled: libPg <= 1, title: '上一页', onClick: () => goLibPage(Math.max(1, libPg - 1)) }, '‹ 上一页'),
-              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-copytop': '', 'data-pg-tip': '快分享小萝莉给我！——春灯笼（这 10 张一次粘进 QQ）', 'data-pg-tip-rainbow': '', disabled: pageFileBusy || !works.length, onClick: () => copyPageFiles(0, 10) },
-                pageFileBusy ? '准备文件…' : '复制前 10 张'),
+              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-copytop': '', 'data-pg-tip': '把本页前半部分作品一次粘进 QQ——春灯笼', 'data-pg-tip-rainbow': '', disabled: pageFileBusy || !works.length, onClick: () => copyPageFiles(0, halfCount) },
+                pageFileBusy ? '准备文件…' : '复制前一半'),
               h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-tip': '一键打包本页 ' + wcount + ' 件成 .7z（文件名：' + pageTitle + '）\n自带密码「春」防止失效；压缩包是临时的，1 小时后自动删除\n建议先选「纯图模式」，一页 30 张能一次打完', 'data-pg-tip-rainbow': '', disabled: pagePackBusy || !works.length, onClick: packPage },
                 pagePackBusy ? '打包中…' : '打包本页 7z'),
-              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-tip': '后 10 张同样一次粘进 QQ——春灯笼', 'data-pg-tip-rainbow': '', disabled: pageFileBusy || works.length <= 10, onClick: () => copyPageFiles(10, 10) },
-                pageFileBusy ? '准备文件…' : '复制后 10 张'),
+              h('button', { 'data-pg-btn': '', 'data-pg-copyfiles': '', 'data-pg-tip': '把本页后半部分作品一次粘进 QQ——春灯笼', 'data-pg-tip-rainbow': '', disabled: pageFileBusy || wcount <= halfCount, onClick: () => copyPageFiles(halfCount, Math.max(1, wcount - halfCount)) },
+                pageFileBusy ? '准备文件…' : '复制后一半'),
               h('button', { 'data-pg-btn': '', 'data-pg-libnext': '', disabled: libPg >= libPages, title: '下一页', onClick: () => goLibPage(Math.min(libPages, libPg + 1)) }, '下一页 ›')),
             h('button', { 'data-pg-btn': '', onClick: openDownloadRoot }, '打开文件保存目录'),
             h('button', {
               'data-pg-btn': '', 'data-on': pure ? '' : undefined, 'data-pg-purebtn': '',
-              'data-pg-tip': pure ? '退出纯图模式：恢复标题、评分、画师与标签，一页 20 张' : '纯图模式：只留封面，信息收起来，一页 30 张（更好一次性打包/分享）',
-              onClick: () => setPure(!pure)
+              'data-pg-tip': '纯图模式会把作品的信息栏隐藏显示。当前共显示 ' + wcount + ' 张作品，应用纯图模式后会显示 ' + pureProjected + ' 张作品。',
+              onClick: () => { if (!pure) pureBaseRef.current = pageSize; setPure(!pure) }
             }, pure ? '退出纯图' : '纯图模式')),
           multi ? h('div', { 'data-pg-batchbar': '' },
             h('span', { 'data-pg-batchcount': '' }, `已选 ${picked.length} 件`),

@@ -4,7 +4,7 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.6.7-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.6.8-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)
@@ -296,6 +296,19 @@ MIT。刷Pixiv 插件另见其自身仓库与许可。
 ---
 
 ## 更新日志（倒序）
+
+### v1.6.8 · 2026-11-23 20:22:00
+
+这一版把作品库的目标标签和主界面统一，顺手修掉差分角标、复制分段和纯图模式的容量。
+
+**作品库**
+- 目标标签胶囊直接复用主界面样式（透明底、黄描边、黄字、14.5px），两侧栏不再各长一套。
+- 「差分×N」角标移到卡片左下角，不再压住顶部的分级/动图/收藏标记。
+- 「复制前 10 张 / 复制后 10 张」改为「复制前一半 / 复制后一半」，按当前页作品数对半分。
+
+**纯图模式**
+- 进入纯图模式后页容量至少比当前页多 1/4，并继续按可视区域填满；上限从 120 提到 200。
+- 按钮说明改为动态文案：当前显示多少张、应用纯图模式后显示多少张。
 
 ### v1.6.7 · 2026-11-23 20:10:00
 

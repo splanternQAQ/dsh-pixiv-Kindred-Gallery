@@ -187,7 +187,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.6.7'
+const GALLERY_VERSION = '1.6.8'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
