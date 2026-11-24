@@ -4,12 +4,14 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.7.0-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.7.1-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
-![license](https://img.shields.io/badge/license-MIT-3fb950?style=flat-square)
+![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 ![telemetry](https://img.shields.io/badge/telemetry-none-2ea043?style=flat-square)
 ![local](https://img.shields.io/badge/data-只存本机-8b5cf6?style=flat-square)
+
+> **非官方项目**：与 Pixiv Inc. 没有隶属、授权或背书关系；“Pixiv”只用于说明兼容的站点。
 
 它自己不算图：搜图、看图、下载都交给 [刷Pixiv](https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery)（`dsh-pixiv-scroll`）；画廊负责把结果摆成卡片、让你打分、记住你的口味。
 
@@ -300,11 +302,34 @@ DSH 插件与宿主 DSH **跑在同一个进程里**，插件本身没有独立�
 
 ## 许可
 
-MIT。刷Pixiv 插件另见其自身仓库与许可。
+本项目采用 [MIT License](LICENSE)。
+
+- 允许使用、修改、分发和商业使用，不收取许可费；
+- 分发时保留版权声明与许可声明即可；
+- 软件按“现状”提供，不附带任何担保；
+- 你不需要公开修改后的源码。
+
+项目内包含的第三方代码与依赖许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。刷Pixiv 插件另见其自身仓库与许可。
+
+## 支持开发
+
+如果这个插件帮到了你，可以请作者喝杯咖啡。打赏完全自愿，只用于支持开发与维护；不解锁任何功能，也不涉及任何作品内容，所有人获得的都是相同的完整服务。
+
+也欢迎去 B 站给教程视频点个赞、投个币、收个藏（三联），这对插件继续更新很有帮助：
+
+https://www.bilibili.com/video/BV19YWn6CEur
+
+<!-- 收款码图片放在这里：assets/support-qr.png -->
 
 ---
 
 ## 更新日志（倒序）
+
+### v1.7.1 · 2026-11-24 11:58:00
+
+- 许可证保持 MIT（与 v1.7.0 一致），不追溯变更历史版本。
+- 新增 THIRD-PARTY-NOTICES.md，列明 gifenc、playwright-core 等第三方组件与代码审计结论。
+- 补充“非官方项目”声明与支持开发说明，加入 B 站视频三联入口。
 
 ### v1.7.0 · 2026-11-24 07:42:00
 

@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.7.0'
+    const CLIENT_BUILD = '1.7.1'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -12042,7 +12042,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             h('a', { href: 'https://github.com/kuroshio4396/dafayu-pixiv-duty', target: '_blank', rel: 'noreferrer', 'data-pg-homagecard': '' },
               h('b', {}, '刷 Pixiv'), h('i', {}, '阳炎级三番舰黑潮'))),
           h('div', { 'data-pg-aboutline': '', 'data-white': '', style: { marginTop: '6px', whiteSpace: 'pre-wrap' } }, '作者的话：这个插件的初版是我一个人用 DeepSeek-V4.1-Flash 与 Qwen3.8 MAX 花了大概12天打磨出来的。到了v1.6后才反应过来其实可以多借鉴其他人的做法，感谢每一个提供支持的开源仓库，感谢传承开源精神的每个人。最初只是不满足于脚本抓图，后来才变成了如今的模样。如果有同好愿意一起维护，随时欢迎加入~觉得好用的话点个Star吧~'),
-          h('div', { 'data-pg-note2': '' }, 'License: MIT')),
+          h('div', { 'data-pg-note2': '' }, 'License: MIT · 本项目为非官方插件，与 Pixiv 无隶属关系')),
 
                 h('div', { 'data-pg-row': '', style: { marginTop: '12px' } },
           h('button', {
@@ -12539,7 +12539,7 @@ function TutorialSheet({ onClose }) {
         '第二步，再锁画风：数据够了，插件会自动加入一堆你喜欢的标签，还有一堆 10 分作品可以当画风参考；大部分不感兴趣和厌恶的标签权重会降得很低。想完全避免，还是得直接上黑名单。',
         '第三步，最后涩图自由：溺爱模式的卡片均分会明显上升，推送质量趋于稳定，逐渐实现涩图自由。'),
       card('3. 仅安装，我自有妙用',
-        '可以在遵循 MIT 的情况下随意取用画廊的代码，接到其他插件里，希望能给你的项目带来一些思路。'),
+        '可以在遵循 MIT 的情况下取用画廊的代码，接到其他插件里，希望能给你的项目带来一些思路。分发时保留版权与许可声明即可。'),
       h('div', { 'data-pg-note': '', style: { marginTop: '12px' } }, '最后建议：跑多轮等待时，仔细看看设置界面，里面有很多很细的选项；画廊检索也能查一些简单的设置和问题，还能搜 pid 和作品。')))
 }
 /* 目标标签选择器：输入框 + 喜好标签 + 全部标签；左键或右键标签都能加入目标标签 */
