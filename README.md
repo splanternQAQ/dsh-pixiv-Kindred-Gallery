@@ -4,7 +4,7 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.7.1-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.7.5-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -325,6 +325,25 @@ https://www.bilibili.com/video/BV19YWn6CEur
 
 ## 更新日志（倒序）
 
+### v1.7.5 · 2026-11-27 02:07:22
+
+**作品库 · 收藏夹**
+- 收藏夹右键新增「添加/修改特殊指令」：按分数区间加一个或几个标签自动收入作品（全部命中 / 命中任意可选），可写备注、可选颜色；开启自动收入的收藏夹默认在名字前带 `*`，可以关掉。
+- 「藏赏两宜，无可挑剔」与「已收录的 AI 作品」不受自定义规则影响，只保留重命名、删除与解除置顶。
+- 侧栏收藏夹显示颜色条与 `*` 前缀，悬停能看到自动收入规则与备注；选择收藏夹的弹层同样显示颜色、`*` 与「自动收入」标记。
+- 修复把作品加入收藏夹后列表自动回到顶部：列表不再被替换，选择弹层改为叠加显示，滚动位置保持不动。
+
+**作品详情**
+- 标签右键菜单新增「复制当前标签到剪贴板」，复制失败时会提示改用选中复制。
+
+**画廊数据直连炼图**
+- 子菜单设置新增「画廊数据直连炼图」：把高分作品按姿势 / 动作 / 装饰 / 服装等标签整理成数据集，附 Illustrious XL、NoobAI、Animagine 三家的提示词与参数档案。
+- 在画廊数据目录生成 `train-bridge/`：`interface.json`、`models.json`、`dataset/`（图 + caption + manifest + tags）、`inbox/`、`outbox/` 与 `comfy_bridge.py`，可直接交给 DSH 或本机 ComfyUI 接手。
+- 炼图产物丢进 `outbox/` 或「炼图模型反图文件夹」后自动回收进作品库，解析 A1111 / ComfyUI 元数据并按 `gen_时间_文件名` 落盘。
+- 设置 → 下载相关新增「炼图模型反图文件夹」；新手教程新增「3. 接入绘图插件」。
+
+**其他**
+- 规则接口 `/collection/rule` 随插件注册；保存后作品库缓存即时失效，规则改动与评分立刻生效。
 ### v1.7.1 · 2026-11-24 11:58:00
 
 - 许可证保持 MIT（与 v1.7.0 一致），不追溯变更历史版本。

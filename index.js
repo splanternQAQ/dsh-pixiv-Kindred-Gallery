@@ -37,8 +37,9 @@ import {
   /** 采集限流 */ COLLECT_RULE_DEFAULTS, collectRules, dropRoundCollect, libraryIdSet, planCollectDrops, recordCollected,
   /** 全局已收集 */ collectedIdSet, seedCollectedIds, markCollected,
   /** AI 标记 */ AI_COLLECTION, isAiTags,
-  /** 收藏夹置顶 */ collectionPin, collectionPinOrder, collectionSwap, collectionOrder,
+  /** 收藏夹置顶 */ collectionPin, collectionPinOrder, collectionSwap, collectionOrder, collectionRule,
 } from './lib/gallery.mjs'
+import { bridgePaths, dropToInbox, ensureBridge, exportDataset, ingestOutputs, trainStatus } from './lib/trainer.mjs'
 import { depsSnapshot, chromeExe, pixivScrollDir, playwrightCoreDir, loginPlaywrightStatus, installPlaywrightCore } from './lib/deps.mjs'
 
 /** 刷Pixiv 是否真的作为插件被 DSH 加载（profile node_modules 里有它），而不是只剩源码目录 */
@@ -187,7 +188,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.7.1'
+const GALLERY_VERSION = '1.7.5'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -284,6 +285,43 @@ function lookupCustomBg(home) {
   return ''
 }
 
+/** 顶栏横幅的落盘位置：<galleryHome>/backgrounds/home.<ext>（没上传过就返回空） */
+function lookupHomeBg(home) {
+  const dir = join(home, 'backgrounds')
+  for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
+    const f = join(dir, 'home.' + ext)
+    if (existsSync(f)) return f
+  }
+  return ''
+}
+
+/** 从文件头读宽高（png / jpg / webp），只为给前端一句「这张是 1900×400」的提示 */
+function probeImageSize(buf, ext) {
+  try {
+    if (ext === 'png' && buf.length > 24) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+    if (ext === 'jpg') {
+      let i = 2
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) { i += 1; continue }
+        const m = buf[i + 1]
+        const len = buf.readUInt16BE(i + 2)
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+          return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) }
+        }
+        i += 2 + (len > 1 ? len : 2)
+      }
+      return null
+    }
+    if (ext === 'webp') {
+      const tag = buf.subarray(12, 16).toString('ascii')
+      if (tag === 'VP8X') return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) }
+      if (tag === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff }
+      if (tag === 'VP8L') { const b = buf.readUInt32LE(21); return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 } }
+    }
+  } catch { /* 尺寸读不出来就当没有 */ }
+  return null
+}
+
 function sendFile(file) {
   try {
     const st = statSync(file)
@@ -371,7 +409,15 @@ function makeApi(deps) {
   }
   const dropRuntimeBits = () => { rtBits = { at: 0, lib: null, bytes: 0, count: 0 } }
   // 任何写盘都让 /library 的 8 秒缓存失效，否则刚建/刚加入的收藏夹在作品库里要等 8 秒才出现
-  const save = () => { stateRef.state = saveState(home, stateRef.state); resetLibraryCache(); dropRuntimeBits(); return stateRef.state }
+/* /library 整份响应缓存：那份 enrich（applyWorkMeta + shareTagEdits + applyGradeEdits + dlStateOf，近 800 件）
+   每次约 500ms，8 秒的 listLibraryCached 只省了扫盘，省不掉这一段。这一层直接复用上一次算好的整份响应：
+   任何写盘（save）或显式清库缓存都会把序号 +1 让它失效，再加 3 秒 TTL 兜住进程外的改动（手工删文件、别的窗口落盘）。 */
+let LIB_RES = null
+let LIB_RES_SEQ = 0
+const libResDrop = () => { LIB_RES = null; LIB_RES_SEQ += 1 }
+const resetLibAll = () => { try { resetLibraryCache() } catch { /* ignore */ } libResDrop() }
+
+  const save = () => { stateRef.state = saveState(home, stateRef.state); resetLibAll(); dropRuntimeBits(); return stateRef.state }
   // 全局去重迁移：把历史轮次 / 作品目录里出现过的作品 id 补进 collectedIds（只做一次，之后增量维护）
   try {
     const seeded = seedCollectedIds(pixiv, stateRef.state)
@@ -1485,15 +1531,61 @@ const fetchPixivAjax = async (path) => {
       taste = buildTaste({ home, pixiv, works: pack.libraryWorks || [], log })
     } catch (e) { log('实时口味计算失败（不影响读取）：' + String(e?.message ?? e).slice(0, 120)) }
     step(`口味权重就绪：参与评分 ${taste?.ratedCount || 0} 件；画像样本 作品库 ${pack.libraryCount} 张 + 卡片 ${pack.roundCount} 张`)
+    /* 新用户首次读取：本地几乎没评过分、也没有画像和喜好标签时，「作品库 9/10 分」这一池是空的，
+       只能从收藏夹本身起步。判据：一个作者被收藏两件以上＝在追这个画风，优先用他们；
+       一件重复都没有，就退回最近收藏的几件。 */
+    const noFavTags = !(Array.isArray(state.config.favoriteTags) ? state.config.favoriteTags : []).length
+    const noStyleYet = !(cfg.tasteStyle && (cfg.tasteStyle.summary || (Array.isArray(cfg.tasteStyle.keywords) && cfg.tasteStyle.keywords.length)))
+    const thinLib = Number(taste?.ratedCount || 0) < 6
+    const freshUser = noFavTags && noStyleYet && thinLib
+    const collectSample = []
+    let sampleMode = '作品库 9/10 分优先，已关注/高分作者代表作，最近 3 张卡片高分补充，收藏夹兜底'
+    let sampleLabel = ''
+    if (freshUser && works.length) {
+      const byArtist = new Map()
+      for (const w of works) {
+        const au = String(w?.userId || '').trim()
+        if (!au) continue
+        const cur = byArtist.get(au) || { userId: au, userName: String(w?.userName || ''), list: [] }
+        cur.list.push(w)
+        byArtist.set(au, cur)
+      }
+      const multi = [...byArtist.values()].filter((a) => a.list.length >= 2).sort((a, b) => b.list.length - a.list.length)
+      const push = (w, tag) => {
+        const id = String(w?.id || '')
+        if (!id || collectSample.some((x) => String(x.id) === id)) return
+        collectSample.push({
+          id,
+          title: String(w?.title || ''),
+          artist: String(w?.userName || ''),
+          tags: Array.isArray(w?.tags) ? w.tags : [],
+          score: null,
+          source: tag,
+        })
+      }
+      if (multi.length) {
+        step(`新用户首次读取：${multi.length} 位作者被你收藏了两件以上，先用他们的作品提炼初始画风`)
+        for (const a of multi.slice(0, 8)) for (const w of a.list.slice(0, 3)) push(w, `收藏夹·同作者（${a.userName || a.userId}）`)
+        sampleMode = '新用户首次读取：同一作者的多件收藏优先（最多 8 位作者 × 3 件）'
+        sampleLabel = '收藏夹里「同一作者被收藏多次」的作品'
+      } else {
+        step('新用户首次读取：收藏里没有重复的作者，改用最近收藏的 8 件作品提炼初始画风')
+        for (const w of works.slice(0, 8)) push(w, '收藏夹·最近收藏')
+        sampleMode = '新用户首次读取：最近收藏的 8 件作品（收藏里没有重复作者）'
+        sampleLabel = '你最近收藏的作品'
+      }
+    }
     let styleGot = { ok: false, error: '没有可用样本' }
     try {
-      const styleWorks = pack.samples.length
-        ? pack.samples
-        : works.slice(0, 6).map((w) => ({
-          id: w.id, title: String(w.title || ''), artist: '', tags: Array.isArray(w.tags) ? w.tags : [], score: null, source: '收藏夹',
-        })).filter((w) => w.id)
+      const styleWorks = collectSample.length
+        ? collectSample.slice(0, 18)
+        : (pack.samples.length
+          ? pack.samples
+          : works.slice(0, 6).map((w) => ({
+            id: w.id, title: String(w.title || ''), artist: '', tags: Array.isArray(w.tags) ? w.tags : [], score: null, source: '收藏夹',
+          })).filter((w) => w.id))
       if (styleWorks.length) {
-        step(`把 ${styleWorks.length} 张本地高分图分批发给视觉模型（每批 5 张，可能要 1–3 分钟）`)
+        step(`把 ${styleWorks.length} 张样本图分批发给视觉模型（每批 5 张，可能要 1–3 分钟）`)
         const mergedTags = [...new Set([
           ...(Array.isArray(state.config.favoriteTags) ? state.config.favoriteTags : []),
           ...tagNames,
@@ -1501,7 +1593,7 @@ const fetchPixivAjax = async (path) => {
         ])].slice(0, 80)
         /* 走 loadVision() 而不是顶层静态 import：改完 lib/vision.mjs 只用 /reload-self 就能生效，不必重启 DSH */
     styleGot = await (await loadVision()).analyzeStyleProfile(ctx, {
-          home, works: styleWorks, favoriteTags: mergedTags, source: 'account-import', maxSamples: 18, batch: 5, log,
+          home, works: styleWorks, favoriteTags: mergedTags, source: 'account-import', sampleLabel, maxSamples: 18, batch: 5, log,
         })
       }
     } catch (e) { log('账号画风分析失败（不影响读取）：' + String(e?.message ?? e).slice(0, 120)) }
@@ -1538,7 +1630,7 @@ const fetchPixivAjax = async (path) => {
       source: 'account',
       works: works.length,
       following: following.length,
-      sampleMode: '作品库 9/10 分优先，已关注/高分作者代表作，最近 3 张卡片高分补充，收藏夹兜底',
+      sampleMode,
     }
     state.config.presets = [...(cfg.presets || []), preset].slice(-50)
     state.config.activePreset = preset.id
@@ -1997,7 +2089,7 @@ const tagKeyOf = (t) => {
   return k
 }
 /** R-18 / R-18G / AI生成：只统计，不进喜爱标签、不参与推送、不能设为目标标签 */
-const isSpecialTagName = (t) => /^(r-?18|r-?18g|ai|ai生成|ai作画|生成ai)$/i.test(String(t || '').trim())
+const isSpecialTagName = (t) => /^(r-?18|r-?18g|ai|ai生成|ai作画|生成ai|aiイラスト|ai-generated|ai生成作品)$/i.test(String(t || '').trim())
 
 /** 喜爱标签来源：manual=用户亲手加入（天蓝底），auto=动态扫描自动加入（粉底），其余来自导入预设（中性底）。权重完全一样，只影响显示。 */
 const autoFavList = (st) => (Array.isArray(st?.config?.autoFavoriteTags) ? st.config.autoFavoriteTags : [])
@@ -2559,7 +2651,7 @@ const PACK_TTL_MS = 3600 * 1000
     const anim = await ensureUgoiraAnim(home, String(id))
     if (!anim?.file || !existsSync(anim.file)) return { ok: false, reason: '合成失败' }
     copyFileSync(anim.file, target)
-    try { resetLibraryCache() } catch { /* ignore */ }
+    try { resetLibAll() } catch { /* ignore */ }
     return { ok: true, file: target, bytes: statSync(target).size }
   }
 
@@ -2582,7 +2674,7 @@ const PACK_TTL_MS = 3600 * 1000
       }
       res.remaining = Math.max(0, res.remaining - res.done)
     } finally { animBackfillBusy = false }
-    if (res.done) { try { resetLibraryCache() } catch { /* ignore */ }; log('动图整段落盘 ' + res.done + ' 件（待补 ' + res.remaining + '）') }
+    if (res.done) { try { resetLibAll() } catch { /* ignore */ }; log('动图整段落盘 ' + res.done + ' 件（待补 ' + res.remaining + '）') }
     return res
   }
 
@@ -2638,7 +2730,7 @@ function queueQuickDownload(id) {
       markCollected(st3, [wid], { round: QUICK_ROUND })
       absorbQuickWork(st3, wid, name)
       save()
-      try { resetLibraryCache() } catch { /* ignore */ }
+      try { resetLibAll() } catch { /* ignore */ }
       log('画廊检索自动下载完成：' + name + '（' + r.pages + ' 页）')
     } catch (e) {
       const msg = String(e?.message ?? e).slice(0, 140)
@@ -3471,6 +3563,8 @@ function maybeQueueQuickDownload(id, score) {
             downloadedCount: diskWorkCount,
             diskFree,
             downloadRootResolved: String(state.config.downloadRoot || '').trim() || guessRoot(home, ''),
+            genDropDirResolved: String(state.config.genDropDir || '').trim(),
+            trainBridgeRoot: bridgePaths(pixiv).root,
             worksRoot,
             pixivDep: pixivDepInfo,
           }
@@ -3660,6 +3754,10 @@ function maybeQueueQuickDownload(id, score) {
         if (body.downloadRoot !== undefined) {
           const v = String(body.downloadRoot || '').trim()
           state.config.downloadRoot = v ? resolve(v) : ''
+        }
+        if (body.genDropDir !== undefined) {
+          const v = String(body.genDropDir || '').trim()
+          state.config.genDropDir = v ? resolve(v) : ''
         }
         if (body.fileNameTemplate !== undefined) {
           const v = String(body.fileNameTemplate || '').trim().slice(0, 120)
@@ -4502,6 +4600,7 @@ function maybeQueueQuickDownload(id, score) {
             contrast: taste.contrast || [],
             authors: taste.authors || [],
             style,
+            styleAt: Number(st.config.tasteStyleAt || 0),
             formula: {
               history: '0.65 × 历史评分（90 天半衰、n/(n+3) 置信度收缩）',
               recent: '0.35 × 最近 30 件评分',
@@ -4525,6 +4624,16 @@ function maybeQueueQuickDownload(id, score) {
           const lib = listLibraryCached(pixiv, st)
           const taste = buildTaste({ home, pixiv, works: lib?.works || [], log })
           const style = st.config.tasteStyle || null
+          const styleAt = Number(st.config.tasteStyleAt || 0)
+          /* 没有画风结论 = 没做过口味分析：作者小窗就是空的。
+             这里绝不自己算一批「推荐作者」出来，否则没分析过的人一进设置页就看见卡片在变。 */
+          if (!style) return ok({ cards: [], styleAt: 0, cached: false })
+          /* 有结论时也只认「分析的这一刻」：分析时间点没变就交回上次那批，
+             评分再动也不会换人，顺带省掉 6 次作者主页抓取 */
+          const cardsCache = (st.config.tasteAuthorCards && typeof st.config.tasteAuthorCards === 'object') ? st.config.tasteAuthorCards : null
+          if (cardsCache && Number(cardsCache.at || 0) === styleAt && Array.isArray(cardsCache.cards) && cardsCache.cards.length) {
+            return ok({ cards: cardsCache.cards, styleAt, cached: true })
+          }
           const top = (taste.authors || []).slice(0, 6)
           const following = readJson(join(pixiv, 'following.json'), {})
           const pubIds = new Set((following.ids || []).map(String))
@@ -4565,7 +4674,8 @@ function maybeQueueQuickDownload(id, score) {
               work: rep || null,
             }
           }))
-          return ok({ cards })
+          try { st.config.tasteAuthorCards = { at: styleAt, cards }; save() } catch { /* 存不下不影响这次显示 */ }
+          return ok({ cards, styleAt, cached: false })
         } catch (e) { return bad(500, String(e?.message ?? e).slice(0, 200)) }
       },
     },
@@ -4630,7 +4740,7 @@ function maybeQueueQuickDownload(id, score) {
     '/tags/target': {
       methods: ['POST'],
       handler: (q, body) => {
-        try { resetLibraryCache() } catch { /* ignore */ }
+        try { resetLibAll() } catch { /* ignore */ }
         const st = load()
         const tag = String(body?.tag || '').trim().slice(0, 60)
         if (!tag) return bad(400, '缺少 tag')
@@ -4645,7 +4755,7 @@ function maybeQueueQuickDownload(id, score) {
     '/tags/fav': {
       methods: ['POST'],
       handler: (q, body) => {
-        try { resetLibraryCache() } catch { /* ignore */ }
+        try { resetLibAll() } catch { /* ignore */ }
         const st = load()
         const tag = String(body?.tag || '').trim().slice(0, 60)
         if (!tag) return bad(400, '缺少 tag')
@@ -4806,12 +4916,19 @@ function maybeQueueQuickDownload(id, score) {
           const n = String(t || '').trim()
           if (/^r-?18g$/i.test(n)) return 'R-18G'
           if (/^r-?18$/i.test(n)) return 'R-18'
-          if (/^(ai|ai生成|ai作画)$/i.test(n)) return 'AI生成'
+          /* AI 作品标签在各处写法不一：AI / AIイラスト / AI-generated / AI生成作品 统一归一成 AI生成 */
+          if (/^ai$/i.test(n) || /^(生成ai|ai生成ai)$/i.test(n) || /^ai[-_\s]?(イラスト|作画|生成|generated|生成作品)$/i.test(n)) return 'AI生成'
           return n
         }
         const state = load()
         const works = listLibraryCached(pixiv, state, { extraRoot: join(home, 'Download') }).works || []
         const rounds = (() => { try { return listRounds(pixiv, state) } catch { return [] } })()
+        /* workMeta 是唯一「评过分就一直留着」的标签底账：轮次会被清空、作品库只收下载过的、评分记录本身不带标签。
+           R-18G / AI 这类冷门标签几乎只在这里有，不读它统计永远是 0 */
+        const metaTags = (id) => {
+          const m = (state.workMeta || {})[String(id)]
+          return (m && Array.isArray(m.tags)) ? m.tags : []
+        }
         const tagsById = new Map()
         for (const r of rounds) {
           try {
@@ -4831,7 +4948,11 @@ function maybeQueueQuickDownload(id, score) {
             const sc = Number(rec?.score)
             if (!Number.isFinite(sc)) continue
             const rm = state.removedWorks?.[id]
-            const tags = [...new Set([...(tagsById.get(String(id)) || []), ...((rm && Array.isArray(rm.tags)) ? rm.tags : [])].map(norm).filter(Boolean))]
+            const tags = [...new Set([
+              ...(tagsById.get(String(id)) || []),
+              ...((rm && Array.isArray(rm.tags)) ? rm.tags : []),
+              ...metaTags(id),
+            ].map(norm).filter(Boolean))]
             for (const t of tags) {
               const row = rated.get(t) || { n: 0, sum: 0 }
               row.n += 1; row.sum += sc; rated.set(t, row)
@@ -4840,7 +4961,7 @@ function maybeQueueQuickDownload(id, score) {
         }
         const map = new Map()
         for (const w of works) {
-          const tags = [...new Set([...(Array.isArray(w.tags) ? w.tags : []), ...(Array.isArray(w.virtualTags) ? w.virtualTags : []), ...(Array.isArray(w.tagKeys) ? w.tagKeys : [])].map(norm).filter(Boolean))]
+          const tags = [...new Set([...(Array.isArray(w.tags) ? w.tags : []), ...(Array.isArray(w.virtualTags) ? w.virtualTags : []), ...(Array.isArray(w.tagKeys) ? w.tagKeys : []), ...metaTags(w.id)].map(norm).filter(Boolean))]
           for (const name of tags) {
             const row = map.get(name) || { tag: name, works: 0, ratedN: 0, ratedSum: 0 }
             row.works += 1
@@ -4861,14 +4982,14 @@ function maybeQueueQuickDownload(id, score) {
           const avg = manual && typeof manual.avg === 'number' ? manual.avg : (r.ratedN ? r.ratedSum / r.ratedN : null)
           const key = tagKeyOf(r.tag)
           const source = manualKeys.has(key) ? 'manual' : autoKeys.has(key) ? 'auto' : (favKeys.has(key) ? 'preset' : '')
-          return { tag: r.tag, works: r.works, rated: r.ratedN, avg: avg === null ? null : Math.round(avg * 10) / 10, manual: Boolean(manual), manualN: manual ? Number(manual.n || 0) : 0, special: /^(r-?18g?|ai|ai生成|ai作画)$/i.test(r.tag), auto: autoKeys.has(key), source }
+          return { tag: r.tag, works: r.works, rated: r.ratedN, avg: avg === null ? null : Math.round(avg * 10) / 10, manual: Boolean(manual), manualN: manual ? Number(manual.n || 0) : 0, special: /^(R-18|R-18G|AI生成)$/.test(r.tag), auto: autoKeys.has(key), source }
         })
         /* 手动加入的喜爱标签即使库里还没有作品 / 还没评过分，也补一行（works=0）：设置页的喜爱标签列表按这份数据渲染，
            不补的话「添加后列表里立刻看不到」 */
         const itemKeys = new Set(items.map((x) => tagKeyOf(x.tag)))
         for (const raw of (state.config.favoriteTags || [])) {
           const name = norm(String(raw || '').trim())
-          if (!name || /^(r-?18g?|ai|ai生成|ai作画)$/i.test(name)) continue
+          if (!name || /^(R-18|R-18G|AI生成)$/.test(name)) continue
           const key = tagKeyOf(name)
           if (!key || itemKeys.has(key)) continue
           itemKeys.add(key)
@@ -4897,7 +5018,7 @@ function maybeQueueQuickDownload(id, score) {
         const tag = String(body?.tag || '').trim().slice(0, 80)
         const avg = Number(body?.avg)
         if (!tag || !Number.isFinite(avg) || avg < 0 || avg > 10) return bad(400, '缺少 tag 或 avg 不在 0-10')
-        if (/^(r-?18g?|ai|ai生成|ai作画)$/i.test(tag)) return bad(400, 'R-18/R-18G/AI 的均分不能手动修改')
+        if (/^(r-?18g?|ai|ai生成|ai作画|aiイラスト|ai-generated|ai生成作品|生成ai)$/i.test(tag)) return bad(400, 'R-18/R-18G/AI 的均分不能手动修改')
         const state = load()
         state.config.tagOverrides = state.config.tagOverrides || {}
         const cur = state.config.tagOverrides[tag] || { n: 0 }
@@ -5271,6 +5392,49 @@ function maybeQueueQuickDownload(id, score) {
         const f = join(PLUGIN_DIR, 'assets', 'backgrounds', id + '.jpg')
         if (!existsSync(f)) return bad(404, '背景图文件不见了')
         return sendFile(f)
+      },
+    },
+
+    /** 主界面顶栏横幅：自己上传过就用那张，没上传就用随插件分发的 1800×373 */
+    '/tipbar/bg': {
+      methods: ['GET'],
+      handler: () => {
+        const f = lookupHomeBg(home) || join(PLUGIN_DIR, 'assets', 'backgrounds', 'tipbar.jpg')
+        if (!existsSync(f)) return bad(404, '顶栏横幅不见了')
+        return { ...sendFile(f), cache: 'no-cache' }
+      },
+    },
+
+    /** 上传自己的顶栏横幅（base64；reset=true 恢复默认那张） */
+    '/tipbar/upload': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const dir = join(home, 'backgrounds')
+        const wipe = () => {
+          for (const old of ['jpg', 'jpeg', 'png', 'webp']) {
+            const f = join(dir, 'home.' + old)
+            if (existsSync(f)) { try { rmSync(f, { force: true }) } catch { /* 删不掉就让新的顶上 */ } }
+          }
+        }
+        try { mkdirSync(dir, { recursive: true }) } catch { /* 目录已存在 */ }
+        if (body?.reset) { wipe(); log('顶栏横幅已恢复默认'); return ok({ reset: true }) }
+        const data = String(body?.data || '')
+        if (!data) return bad(400, '没有收到图片数据')
+        let buf
+        try { buf = Buffer.from(data, 'base64') } catch { return bad(400, '数据不是合法的 base64') }
+        if (!buf.length) return bad(400, '图片是空的')
+        if (buf.length > 16 * 1024 * 1024) return bad(400, '图片太大（上限 16MB，建议 1920×400 左右再压一下）')
+        const head = buf.subarray(0, 12)
+        let ext = ''
+        if (head[0] === 0xff && head[1] === 0xd8) ext = 'jpg'
+        else if (head[0] === 0x89 && head[1] === 0x50) ext = 'png'
+        else if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') ext = 'webp'
+        if (!ext) return bad(400, '只支持 jpg / png / webp')
+        wipe()
+        writeFileSync(join(dir, 'home.' + ext), buf)
+        const dim = probeImageSize(buf, ext)
+        log('顶栏横幅已换成自定义图（' + (buf.length / 1024).toFixed(0) + ' KB' + (dim ? '，' + dim.width + '×' + dim.height : '') + '）')
+        return ok({ bytes: buf.length, ext, width: dim ? dim.width : null, height: dim ? dim.height : null })
       },
     },
 
@@ -5727,7 +5891,7 @@ function maybeQueueQuickDownload(id, score) {
         }
         save()
         feedback()
-        try { resetLibraryCache() } catch { /* ignore */ }
+        try { resetLibAll() } catch { /* ignore */ }
         const autoDownload = score === null ? false : maybeQueueQuickDownload(id, score)
         return ok({ id, score, autoDownload, collected: Boolean(qw) })
       },
@@ -5802,7 +5966,7 @@ function maybeQueueQuickDownload(id, score) {
         }
         save()
         feedback()
-        try { resetLibraryCache() } catch { /* ignore */ }
+        try { resetLibAll() } catch { /* ignore */ }
         return ok({ round, cardName: String(body?.cardName || ''), collection: target || '', saved: names.length, names })
       },
     },
@@ -5896,7 +6060,7 @@ function maybeQueueQuickDownload(id, score) {
             pushMode: false,
           })
         }
-        resetLibraryCache()
+        resetLibAll()
         feedback()
         return ok({ round, cardName: cardName || '', collection: target || '', saved: names.length, names, results, failed })
       },
@@ -6354,7 +6518,7 @@ function maybeQueueQuickDownload(id, score) {
     '/tags/fav/bulk': {
       methods: ['POST'],
       handler: (q, body) => {
-        try { resetLibraryCache() } catch { /* ignore */ }
+        try { resetLibAll() } catch { /* ignore */ }
         const st = load()
         const tags = (Array.isArray(body?.tags) ? body.tags : []).map((t) => String(t || '').trim()).filter(Boolean)
         const on = body?.on !== false
@@ -6381,6 +6545,8 @@ function maybeQueueQuickDownload(id, score) {
 
       methods: ['GET'],
       handler: () => {
+        const libKey = LIB_RES_SEQ + '@' + Math.floor(Date.now() / 20000)
+        if (LIB_RES && LIB_RES.key === libKey) return ok(LIB_RES.payload)
         const st = load()
         const list = markUgoira(listLibraryCached(pixiv, st, { extraRoot: join(home, 'Download') }))
         const miss = []
@@ -6448,7 +6614,9 @@ function maybeQueueQuickDownload(id, score) {
         }
         const extra = { followed, followedPrivate, targetTags, authorStats, favoriteTags, autoFavoriteTags: autoFavList(st), manualFavoriteTags: manualFavList(st), order: libOrder }
         const netFail = dlNetFail.at ? { at: dlNetFail.at, msg: dlNetFail.msg, skipped: dlNetFail.skipped } : null
-        return ok(queued ? { ...list, ...extra, autoQueued: queued, netFail } : { ...list, ...extra, netFail })
+        const payload = queued ? { ...list, ...extra, autoQueued: queued, netFail } : { ...list, ...extra, netFail }
+        LIB_RES = { key: libKey, at: Date.now(), payload }
+        return ok(payload)
       },
     },
 
@@ -6676,7 +6844,7 @@ function maybeQueueQuickDownload(id, score) {
         if (on) state.aiWorks[id] = { at: new Date().toISOString(), round: String(body?.round || '') }
         else delete state.aiWorks[id]
         save()
-        try { resetLibraryCache() } catch { /* ignore */ }
+        try { resetLibAll() } catch { /* ignore */ }
         const lib = listLibraryCached(pixiv, state)
         return ok({ id, ai: on, aiCount: lib.collections.find((c) => c.name === AI_COLLECTION)?.count || 0 })
       },
@@ -7475,6 +7643,72 @@ function maybeQueueQuickDownload(id, score) {
       },
     },
 
+    '/collection/rule': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const state = load()
+        const r = collectionRule(state, body?.name || '', {
+          rule: body?.rule,
+          note: body?.note,
+          color: body?.color,
+          star: body?.star,
+        })
+        if (r.ok) save()
+        return r.ok ? ok(r) : bad(400, r.error)
+      },
+    },
+
+    '/train/status': {
+      methods: ['GET'],
+      handler: () => {
+        const state = load()
+        try { ensureBridge(pixiv, state) } catch (e) { return bad(500, '桥接目录创建失败：' + e.message) }
+        return ok(trainStatus(pixiv, state))
+      },
+    },
+
+    '/train/export': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const state = load()
+        const r = exportDataset(pixiv, state, {
+          minScore: body?.minScore,
+          includeR18: body?.includeR18,
+          tags: body?.tags,
+          mode: body?.mode,
+          perArtist: body?.perArtist,
+          limit: body?.limit,
+          model: body?.model,
+        })
+        save()
+        resetLibraryCache()
+        return ok(r)
+      },
+    },
+
+    '/train/drop': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const state = load()
+        const r = dropToInbox(pixiv, state, body?.works || body?.names || [], {
+          minScore: body?.minScore,
+          model: body?.model,
+          limit: body?.limit,
+        })
+        return ok(r)
+      },
+    },
+
+    '/train/ingest': {
+      methods: ['POST'],
+      handler: (q, body) => {
+        const state = load()
+        const r = ingestOutputs(pixiv, state, { genDropDir: body?.genDropDir })
+        if (r.ingested) { save(); resetLibraryCache() }
+        return ok(r)
+      },
+    },
+
     '/collection/add': {
       methods: ['POST'],
       handler: (q, body) => {
@@ -7893,6 +8127,22 @@ process.exit(0);
           if (!existsSync(abs)) return bad(404, '目录不存在')
           return done(openPath(abs))
         }
+        if (what === 'train') {
+          const p = bridgePaths(pixiv)
+          try { ensureBridge(pixiv, load()) } catch { /* ignore */ }
+          return done(openPath(existsSync(p.root) ? p.root : saveRootOf(pixiv)))
+        }
+        if (what === 'train-dataset') {
+          const p = bridgePaths(pixiv)
+          try { ensureBridge(pixiv, load()) } catch { /* ignore */ }
+          return done(openPath(existsSync(p.dataset) ? p.dataset : p.root))
+        }
+        if (what === 'gen-drop') {
+          const dir = String(load().config.genDropDir || '').trim()
+          if (!dir) return bad(404, '还没有设置炼图反图文件夹')
+          if (!existsSync(dir)) return bad(404, '炼图反图文件夹不存在')
+          return done(openPath(dir))
+        }
         if (what === 'allwork') return done(openPath(allworkOf(pixiv)))
         if (what === 'picks') return done(openPath(picksRootOf(pixiv)))
         return bad(400, '不认识的打开目标')
@@ -8084,7 +8334,7 @@ export function apply(ctx) {
           return
         }
         const filled = await api.backfillWorkMeta(st, ids)
-        if (filled) { try { resetLibraryCache() } catch { /* ignore */ } log('定时补全作品信息 ' + filled + ' 件') }
+        if (filled) { try { resetLibAll() } catch { /* ignore */ } log('定时补全作品信息 ' + filled + ' 件') }
       } catch (e) { log('定时补全作品信息失败：' + (e?.message ?? e)) }
     }, 15 * 60 * 1000)
     disposers.push(() => clearInterval(metaTimer))
