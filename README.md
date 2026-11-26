@@ -29,6 +29,8 @@
 
 <img src="assets/screenshots/library-cards.png" alt="作品库（浅色主题）" width="100%">
 
+<img src="assets/screenshots/settings-trainbridge.png" alt="设置 · 画廊数据直连炼图" width="100%">
+
 </div>
 
 ## 目录
