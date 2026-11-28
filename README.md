@@ -4,7 +4,7 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.7.5-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.7.6-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -326,6 +326,14 @@ https://www.bilibili.com/video/BV19YWn6CEur
 ---
 
 ## 更新日志（倒序）
+
+### v1.7.6 · 2026-11-28 00:00:00
+
+**顶栏**
+- 修复顶栏下拉菜单（严格度 / 新鲜度 / 预设 / 排序等）被下方搜索框与作品卡片盖住：下拉展开时把顶栏临时提到筛选层之上，收起即恢复。
+
+**社群**
+- QQ 群更换为「DSH插件交流群」（群号 1135741595），二维码同步更新。
 
 ### v1.7.5 · 2026-11-27 02:07:22
 

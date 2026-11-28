@@ -188,7 +188,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.7.5'
+const GALLERY_VERSION = '1.7.6'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -5363,9 +5363,12 @@ function maybeQueueQuickDownload(id, score) {
     '/qq-group-qr': {
       methods: ['GET'],
       handler: async () => {
-        const f = join(PLUGIN_DIR, 'assets', 'qq-group.jpg')
-        if (!existsSync(f)) return bad(404, '没有找到群二维码图片')
-        return sendFile(f)
+        /* 群换过号：优先用新的 png，老 jpg 留作兜底 */
+        for (const name of ['qq-group.png', 'qq-group.jpg']) {
+          const f = join(PLUGIN_DIR, 'assets', name)
+          if (existsSync(f)) return sendFile(f)
+        }
+        return bad(404, '没有找到群二维码图片')
       },
     },
 

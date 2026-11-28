@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.7.5'
+    const CLIENT_BUILD = '1.7.6'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -3668,6 +3668,9 @@ a[data-pg-bgcredit]:hover{color:#2563eb;text-decoration:underline;}
 [data-pg-theme="light"] [data-pg-tiptag]{color:#06283a;background:#67c6ec;}
 /* 顶栏背景（1.7.4）：整块顶栏铺主人裁的横幅图；右键折叠 tips；页面顶部继续上滚时顶栏内容整体淡出，只剩图 */
 [data-pg-head]{position:relative;isolation:isolate;border-radius:16px;padding:10px 14px 12px;box-sizing:border-box;}
+/* 顶栏是 isolation 造出的独立层叠上下文（z-index 等价 0），下面的筛选行 z-index:13 会整块压住它，
+   顶栏里的下拉菜单因此被搜索框和卡片盖住。打开下拉时把顶栏临时提到筛选行之上。 */
+[data-pg-head][data-pop="1"]{z-index:1000;}
 [data-pg-head][data-headbg="1"]{background-size:cover;background-position:center 42%;background-repeat:no-repeat;border-bottom-color:transparent;box-shadow:inset 0 0 54px 12px rgba(6,12,22,.46);}
 [data-pg-theme="light"] [data-pg-head][data-headbg="1"]{box-shadow:inset 0 0 54px 12px rgba(255,255,255,.55);}
 [data-pg-head][data-headbg="1"]::after{content:'';position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;background:linear-gradient(118deg,rgba(6,12,22,.88),rgba(6,12,22,.58) 52%,rgba(6,12,22,.24));transition:opacity .45s ease;}
@@ -8966,6 +8969,15 @@ function PillSelect({ label, value, options, onPick, title, wrapAttrs, menuWidth
       document.removeEventListener('keydown', onKey, true)
     }
   }, [open])
+  /* 顶栏自带 isolation，菜单 z-index 再高也只在这一层里比；打开时把顶栏整体提到筛选行之上 */
+  React.useEffect(() => {
+    const btnEl = btn.current
+    const headEl = btnEl && btnEl.closest ? btnEl.closest('[data-pg-head]') : null
+    if (!headEl) return undefined
+    if (open) headEl.setAttribute('data-pop', '1')
+    else headEl.removeAttribute('data-pop')
+    return () => { try { headEl.removeAttribute('data-pop') } catch (e) { /* ignore */ } }
+  }, [open])
   /* 菜单用 fixed + 视口钳制：不再被父容器的 overflow / 宿主会话栏裁掉 */
   React.useLayoutEffect(() => {
     if (!open) { setPos(null); return undefined }
@@ -9573,7 +9585,7 @@ function pgPickTip() {
 
 /* 给作者提意见：群号 / 二维码 / B 站视频 / 仓库与 issue，全在一个弹窗里 */
 function FeedbackSheet({ onClose, say, theme = '' }) {
-  const QQ_GROUP = '1093198539'
+  const QQ_GROUP = '1135741595'
   const [copied, setCopied] = React.useState(false)
   const copyQq = async () => {
     try {
@@ -9596,7 +9608,7 @@ function FeedbackSheet({ onClose, say, theme = '' }) {
     h('div', { 'data-pg-fbbody': '' },
       h('div', { 'data-pg-fbcard': '' },
         h('div', { 'data-pg-fbcap': '' }, '进群直接说（最快）'),
-        h('img', { 'data-pg-fbqr': '', src: BASE + '/qq-group-qr', alt: 'DSH 知心画廊交流群二维码' }),
+        h('img', { 'data-pg-fbqr': '', src: BASE + '/qq-group-qr', alt: 'DSH插件交流群二维码' }),
         h('button', {
           'data-pg-btn': '', 'data-pg-fbqq': '', type: 'button', title: '点一下复制群号', onClick: copyQq,
         }, copied ? '已复制 ✓' : ('群号：' + QQ_GROUP))),
@@ -12585,20 +12597,20 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             target: '_blank', rel: 'noreferrer', 'data-pg-link': '', 'data-pg-repolink': '',
           }, projectUrl || 'github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery')),
           h('div', { 'data-pg-qq': '' },
-            h('img', { 'data-pg-qqimg': '', src: `${BASE}/qq-group-qr`, alt: 'DSH知心画廊交流群二维码', title: '扫码进群' }),
+            h('img', { 'data-pg-qqimg': '', src: `${BASE}/qq-group-qr`, alt: 'DSH插件交流群二维码', title: '扫码进群' }),
             h('div', { 'data-pg-qqinfo': '' },
-              h('div', { 'data-pg-qqname': '' }, 'DSH知心画廊交流群'),
+              h('div', { 'data-pg-qqname': '' }, 'DSH插件交流群'),
               h('button', {
                 'data-pg-qqnum': '', type: 'button', title: '点击复制群号',
                 onClick: async () => {
                   try {
-                    await navigator.clipboard.writeText('1093198539')
+                    await navigator.clipboard.writeText('1135741595')
                     setQqCopied(true)
                     window.setTimeout(() => setQqCopied(false), 1600)
-                    say?.('群号已复制：1093198539', 'good')
+                    say?.('群号已复制：1135741595', 'good')
                   } catch (e) { say?.('复制失败：' + String(e?.message ?? e), 'warn') }
                 },
-              }, qqCopied ? '已复制 ✓' : '群号：1093198539'),
+              }, qqCopied ? '已复制 ✓' : '群号：1135741595'),
               h('div', { 'data-pg-qqhint': '' }, '扫码进群 · 点群号复制'))),
           h('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } },
             h('span', { 'data-pg-note2': '' }, `版本 ${version}`),
