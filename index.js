@@ -188,7 +188,7 @@ const MAX_BODY = 1024 * 1024
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const WORK_CONCURRENCY = Math.max(1, Number(process.env.PIXIV_GALLERY_WORK_CONCURRENCY) || 3)
 
-const GALLERY_VERSION = '1.7.6'
+const GALLERY_VERSION = '1.7.7'
 const GALLERY_REPO = 'https://github.com/splanternQAQ/dsh-pixiv-Kindred-Gallery'
 /* 本次 DSH 启动的身份：前端拿它判断「检索对话要不要清」（换进程＝算一次新的 DSH） */
 const BOOT_ID = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
@@ -3017,14 +3017,36 @@ function maybeQueueQuickDownload(id, score) {
           } catch (e) {
             log(`更新前备份失败（继续安装）：${e?.message ?? e}`)
           }
-          cpSync(unpacked, srcDir, { recursive: true, force: true })
+          /* 逐个文件盖回去：单个文件被占用（EACCES / EPERM）只记下来、不中断整次更新。
+             以前是一句 cpSync 整树覆盖 —— assets 里只要有一张图正被读（或被杀软锁着），
+             整次更新就在这里抛错，前端只看到一条红色的「安装失败：EACCES」。 */
+          const skipped = []
+          const copyTree = (from, to) => {
+            let names = []
+            try { names = readdirSync(from) } catch { skipped.push(to); return }
+            for (const n of names) {
+              if (/[\\/]node_modules([\\/]|$)|[\\/]\.git([\\/]|$)/.test(join(from, n))) continue
+              const s = join(from, n)
+              const d = join(to, n)
+              let st
+              try { st = statSync(s) } catch { continue }
+              if (st.isDirectory()) {
+                try { mkdirSync(d, { recursive: true }) } catch { skipped.push(n); continue }
+                copyTree(s, d)
+              } else {
+                try { cpSync(s, d, { force: true }) } catch { skipped.push(d.startsWith(srcDir) ? d.slice(srcDir.length + 1) : n) }
+              }
+            }
+          }
+          copyTree(unpacked, srcDir)
+          if (skipped.length) log(`更新：${skipped.length} 个文件被占用跳过 —— ${skipped.slice(0, 8).join('、')}`)
           log(`已安装更新：${GALLERY_VERSION} → ${remoteVersion || '?'}（${files} 个文件，备份 ${backup}）`)
           try {
             const st2 = load()
             delete st2.config.githubUpdate
             save()
           } catch { /* ignore */ }
-          return ok({ installed: remoteVersion || '', from: GALLERY_VERSION, files, bytes: res.body.length, backup, needsRestart: true })
+          return ok({ installed: remoteVersion || '', from: GALLERY_VERSION, files, bytes: res.body.length, backup, skipped, needsRestart: true })
         } catch (e) {
           log(`安装更新失败：${e?.stack || e?.message || e}`)
           return bad(500, String(e?.message ?? e))
@@ -5426,7 +5448,7 @@ function maybeQueueQuickDownload(id, score) {
         let buf
         try { buf = Buffer.from(data, 'base64') } catch { return bad(400, '数据不是合法的 base64') }
         if (!buf.length) return bad(400, '图片是空的')
-        if (buf.length > 16 * 1024 * 1024) return bad(400, '图片太大（上限 16MB，建议 1920×400 左右再压一下）')
+        if (buf.length > 30 * 1024 * 1024) return bad(400, '图片太大（上限 30MB，建议 1920×400 左右再压一下）')
         const head = buf.subarray(0, 12)
         let ext = ''
         if (head[0] === 0xff && head[1] === 0xd8) ext = 'jpg'
@@ -8148,6 +8170,9 @@ process.exit(0);
         }
         if (what === 'allwork') return done(openPath(allworkOf(pixiv)))
         if (what === 'picks') return done(openPath(picksRootOf(pixiv)))
+        /* 数据根：preferences.json / gallery.json / picks / thumbs / ugoira / 下载原图 全在这下面。
+           「卸载插件前先备份」那颗按钮直接开这里，不用让用户自己去 ~/.dsh 里翻。 */
+        if (what === 'data') return done(openPath(pixiv))
         return bad(400, '不认识的打开目标')
       },
     },
@@ -8427,12 +8452,17 @@ export function apply(ctx) {
           const method = (req.method || 'GET').toUpperCase()
           let body
           if (method === 'POST') {
+            /* 图片上传走 base64，体积比原图涨 1/3：这两条路由单独放宽，其余仍旧 1 MiB
+               （以前一律 1 MiB，前端却承诺 16MB/12MB —— 图一到 750KB 就被 req.destroy()，
+               前端只看到「没收到图片数据」，是「传头图老失败」的真因）。 */
+            const bigPost = path === '/tipbar/upload' || path === '/bg/upload'
+            const bodyCap = bigPost ? 24 * 1024 * 1024 : MAX_BODY
             body = await new Promise((resolveBody) => {
               let size = 0
               const chunks = []
               req.on('data', (c) => {
                 size += c.length
-                if (size > MAX_BODY) { resolveBody({}); req.destroy(); return }
+                if (size > bodyCap) { resolveBody({}); req.destroy(); return }
                 chunks.push(c)
               })
               req.on('end', () => {

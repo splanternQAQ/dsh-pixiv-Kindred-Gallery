@@ -4,7 +4,7 @@
 
 **给 DeepSeek Harness 的本地画廊：跑一轮 → 打分 → 收进作品库 → 学你的口味**
 
-![version](https://img.shields.io/badge/version-1.7.6-ff69b4?style=flat-square)
+![version](https://img.shields.io/badge/version-1.7.7-ff69b4?style=flat-square)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078d4?style=flat-square)
 ![dsh](https://img.shields.io/badge/DSH-0.2.x-4d6bfe?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)
@@ -331,6 +331,12 @@ https://www.bilibili.com/video/BV19YWn6CEur
 ---
 
 ## 更新日志（倒序）
+
+### v1.7.7 · 2026-11-28 20:20:15
+- 顶栏横幅：修「默认头图不见了」——`assets/backgrounds/tipbar.jpg` 一直没进仓库，全新安装/重装后 `/tipbar/bg` 只会回落到一个不存在的文件，于是 404、横幅空白，点「恢复默认」也救不回来。现在把它随插件一起发。
+- 头图上传：以前前端把原图直接 base64 发出去，而服务端单请求体上限只有 1 MiB（前端却写着 16MB/12MB），图一过 750KB 就被掐断，只看到「没收到图片数据」。现在上传前先在本地压图再发，源文件上限放宽到 30MB；服务端只对 `/tipbar/upload`、`/bg/upload` 两条路由放宽到 24 MiB。
+- 重装不再报 EACCES：整树 `cpSync` 改成逐文件容错，被占用的文件记下来跳过并在日志里点名，不再让一张正被读的图片毁掉整次更新。
+- 设置页「检查更新」下面加了一段卸载前备份提醒，并配一颗「打开数据文件夹」按钮（偏好、作品库、缩略图、原图都在那一层）。
 
 ### v1.7.6 · 2026-11-28 18:16:43
 

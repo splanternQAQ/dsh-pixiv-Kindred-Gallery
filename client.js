@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({
 
     /* 这一份前端是哪个版本：跟 /status 回的 version 一比就知道界面是不是旧的。
        插件的前端 bundle 只在启动/刷新时从磁盘取，所以旧的那份里没有新代码，只能整页重取。 */
-    const CLIENT_BUILD = '1.7.6'
+    const CLIENT_BUILD = '1.7.7'
     /* 按过刷新之后要有个看得见的交代：整页重取这件事本身没有反馈，只能自己留个记号。
        宿主那边 F5 才是真重载（自己的 Ctrl+R 监视常被截胡），所以不能靠「有没有走 pgReload」判断，
        改成每次加载都盖一个时间戳：上一枚还在、而且很近，就是刚刷新过。 */
@@ -530,6 +530,44 @@ pgDialogKeys()
       return PG_LIB.inflight
     }
     const pgLibDrop = () => { PG_LIB.at = 0; PG_LIB.data = null }
+    /* 上传前先压图再 POST：请求体是 JSON + base64，体积比原图涨 1/3。
+       以前这里是 FileReader 直读原样发出去 —— 用户选一张整屏截图（2–5MB）就必然撑爆服务端单请求体上限，
+       前端只看到「没收到图片数据」，也就是「传头图老失败」。现在按目标边长重编码、逐档降质，
+       直到 base64 落进 LIMIT，30MB 的原图也能收。透明底铺黑：头图/背景都是满铺，留透明会变白边。 */
+    const shrinkForUpload = (file, maxW, maxH) => new Promise((resolve, reject) => {
+      let objUrl = ''
+      try { objUrl = URL.createObjectURL(file) } catch { reject(new Error('这张图读不出来')); return }
+      const img = new Image()
+      const done = (fn, v) => { try { URL.revokeObjectURL(objUrl) } catch { /* ignore */ } fn(v) }
+      img.onload = () => {
+        try {
+          const nw = img.naturalWidth || maxW
+          const nh = img.naturalHeight || maxH
+          const scale = Math.min(1, maxW / nw, maxH / nh)
+          let w = Math.max(1, Math.round(nw * scale))
+          let h = Math.max(1, Math.round(nh * scale))
+          const LIMIT = 2.6 * 1024 * 1024
+          let q = 0.94
+          let out = ''
+          for (let pass = 0; pass < 16; pass++) {
+            const cv = document.createElement('canvas')
+            cv.width = w
+            cv.height = h
+            const cx = cv.getContext('2d')
+            cx.fillStyle = '#000'
+            cx.fillRect(0, 0, w, h)
+            cx.drawImage(img, 0, 0, w, h)
+            out = cv.toDataURL('image/jpeg', q)
+            if (out.length <= LIMIT) break
+            if (q > 0.6) q = Math.max(0.6, q - 0.08)
+            else { w = Math.max(480, Math.round(w * 0.88)); h = Math.max(120, Math.round(h * 0.88)) }
+          }
+          done(resolve, { dataURL: out, width: w, height: h })
+        } catch (e) { done(reject, e) }
+      }
+      img.onerror = () => done(reject, new Error('这张图读不出来（只认 jpg / png / webp）'))
+      img.src = objUrl
+    })
     const api = async (path, body) => {
       if (body === undefined && (path === '/library' || path === '/library/')) {
         if (PG_LIB.data && Date.now() - PG_LIB.at < PG_LIB_TTL) return pgLibCopy(PG_LIB.data)
@@ -2646,6 +2684,9 @@ a[data-pg-btn]{text-decoration:none;display:inline-flex;align-items:center;}
 [data-pg-tutorial] [data-pg-tutlead]{margin:10px 0 4px;font-size:15px;line-height:1.9;font-weight:800;color:#f9a8d4;}
 [data-pg-tutorial] [data-pg-tutwarn]{margin-top:11px;color:#fbbf24;font-weight:700;}
 [data-pg-tutorial][data-pg-theme="light"] [data-pg-tutwarn]{color:#b45309;}
+/* 卸载前的备份提醒（设置页「检查更新」块下面）：深色用亮琥珀、浅色换深琥珀，别写死一个色 */
+[data-pg-backupwarn]{font-size:12px;line-height:1.9;margin-top:6px;color:#fbbf24;}
+[data-pg-theme="light"] [data-pg-backupwarn]{color:#b45309;}
 [data-pg-theme="light"] [data-pg-tutorial] [data-pg-tutlead],[data-pg-tutorial][data-pg-theme="light"] [data-pg-tutlead]{color:#be185d;}
 [data-pg-theme="light"] [data-pg-tutorial] [data-pg-tutcard] p,[data-pg-tutorial][data-pg-theme="light"] [data-pg-tutcard] p{color:#1f2937;}
 [data-pg-theme="light"] [data-pg-tutorial] [data-pg-note]{color:#475569;}
@@ -10942,23 +10983,22 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       }, [])
       const mb = (n) => `${(Number(n || 0) / 1048576).toFixed(1)} MB`
       const gb = (n) => `${(Number(n || 0) / 1073741824).toFixed(1)} GB`
-      /* 自定义背景：读成本地 base64 再交给服务端落盘（存在数据目录里，重装插件也不丢） */
+      /* 自定义背景：本地先压再传（存在数据目录里，重装插件也不丢） */
       const pickBgFile = (file) => {
         if (!file) return
-        if (file.size > 12 * 1024 * 1024) { setBgMsg('图太大（上限 12MB），先压到 1600px 宽再来'); return }
-        setBgMsg('正在保存…')
-        const rd = new FileReader()
-        rd.onload = async () => {
+        if (!/^image\//.test(file.type || '')) { setBgMsg('只认 jpg / png / webp'); return }
+        if (file.size > 30 * 1024 * 1024) { setBgMsg('图太大（上限 30MB）'); return }
+        setBgMsg('正在压图…')
+        shrinkForUpload(file, 2400, 1600).then(async ({ dataURL }) => {
+          setBgMsg('正在保存…')
           try {
-            const data = String(rd.result || '').replace(/^data:[^,]*,/, '')
+            const data = String(dataURL || '').replace(/^data:[^,]*,/, '')
             await api('/bg/upload', { data })
             setBgCustom(true)
             setLookupBg('custom')
             setBgMsg('已保存，进画廊检索就能看到')
           } catch (e) { setBgMsg('没存上：' + String((e && e.message) || e)) }
-        }
-        rd.onerror = () => setBgMsg('读不出这个文件')
-        rd.readAsDataURL(file)
+        }).catch((e) => setBgMsg('没压成：' + String((e && e.message) || e)))
       }
 
       const bumpHomeBg = () => {
@@ -10969,20 +11009,19 @@ function Settings2({ onClose, onSaved, say, embedded = false, updateIntent = nul
       }
       const pickHomeFile = (file) => {
         if (!file) return
-        if (file.size > 16 * 1024 * 1024) { setHomeMsg('图太大（上限 16MB），先压到 1920 宽再来'); return }
-        setHomeMsg('正在保存…')
-        const rd = new FileReader()
-        rd.onload = async () => {
+        if (!/^image\//.test(file.type || '')) { setHomeMsg('只认 jpg / png / webp'); return }
+        if (file.size > 30 * 1024 * 1024) { setHomeMsg('图太大（上限 30MB）'); return }
+        setHomeMsg('正在压图…')
+        shrinkForUpload(file, 2560, 1200).then(async ({ dataURL, width, height }) => {
+          setHomeMsg('正在保存…')
           try {
-            const data = String(rd.result || '').replace(/^data:[^,]*,/, '')
+            const data = String(dataURL || '').replace(/^data:[^,]*,/, '')
             const r = await api('/tipbar/upload', { data })
-            const dim = r && r.width ? r.width + '×' + r.height : ''
+            const dim = (r && r.width) ? (r.width + '×' + r.height) : (width + '×' + height)
             setHomeMsg('已保存' + (dim ? '：' + dim : '') + '，回主页就能看到')
             bumpHomeBg()
           } catch (e) { setHomeMsg('没存上：' + String((e && e.message) || e)) }
-        }
-        rd.onerror = () => setHomeMsg('读不出这个文件')
-        rd.readAsDataURL(file)
+        }).catch((e) => setHomeMsg('没压成：' + String((e && e.message) || e)))
       }
       const resetHomeBg = async () => {
         try {
@@ -12632,6 +12671,21 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             updateMsg ? h('span', { 'data-pg-note2': '' }, updateMsg) : null),
           h('div', { 'data-pg-note2': '', style: { marginTop: '6px', lineHeight: 1.8 } },
             '提示：部分同版本的 bug（比如界面整块空白）只看版本号发现不了，点「重装最新版」会直接拉仓库当前代码覆盖，装完重启 DSH 就修好了。'),
+          h('div', { 'data-pg-backupwarn': '' },
+            '⚠ 卸载前请先备份：从插件市场卸载本插件时，个人偏好（preferences.json）、作品库与评分（gallery.json）、已下载的缩略图和原图，全都放在同一个数据文件夹里。卸载插件本身不会删它们，但手动清目录、或换机器就救不回来了 —— 想留就点下面这颗按钮，把整个文件夹复制一份带走。'),
+          h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginTop: '6px', flexWrap: 'wrap' } },
+            h('button', {
+              'data-pg-btn': '', type: 'button',
+              title: '打开插件的个人数据文件夹：偏好、作品库、缩略图、下载的原图都在里面（备份这一个文件夹就够了）',
+              onClick: async () => {
+                try {
+                  const r = await api('/open', { what: 'data' })
+                  if (!r || r.ok === false) throw new Error((r && r.error) || '打开失败')
+                  say?.('已打开数据文件夹，整个复制一份就是完整备份', 'good')
+                } catch (e) { say?.('打开失败：' + String((e && e.message) || e), 'warn') }
+              },
+            }, '打开数据文件夹'),
+            h('span', { 'data-pg-note2': '' }, '偏好 / 作品库 / 缩略图 / 原图都在里面')),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             h('a', { href: 'https://space.bilibili.com/1620499208?spm_id_from=333.1387.0.0', target: '_blank', rel: 'noreferrer', 'data-pg-link': '', 'data-bili': '' }, '▶ B站'),
             h('a', { href: 'https://github.com/splanternQAQ', target: '_blank', rel: 'noreferrer', 'data-pg-link': '', 'data-github': '' }, '◉ GitHub')),
