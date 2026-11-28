@@ -12152,7 +12152,7 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
           h('button', {
             key: 'algo', 'data-pg-secbtn': '', type: 'button',
             style: { borderColor: '#eab308', background: 'linear-gradient(180deg,#eab30826,#eab3080f)' },
-            title: '标签权重算法；开源仓库致谢都在里面',
+            title: '标签权重算法；开源仓库与致谢名单都在里面',
             onClick: () => { setAlgoOpen(true) },
           }, h('span', { 'data-pg-secdot': '', style: { background: '#eab308' } }), '算法优化帮助')),
         ),
@@ -12719,6 +12719,10 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
             h('button', { 'data-pg-btn': '', 'data-primary': '', type: 'button', disabled: tokBusy, onClick: tokStart }, tokBusy ? '等待登录…' : '打开登录窗口并获取'),
             h('button', { 'data-pg-btn': '', type: 'button', disabled: tokBusy, onClick: () => setTokOpen(false) }, '关闭'))))) : null
       const THANKS_GROUPS = [
+        { title: '反馈与建议者', color: '#fb7185', items: [
+          ['zhongcrazyx', 'https://github.com/zhongcrazyx', 'issue #3 的三层根因报告：目录模板兜底、补下载只传 id、判重看瞬时值，v1.1.0 的重复卡片修复直接来自这份分析。'],
+          ['luguopiqiu', 'https://github.com/luguopiqiu', 'PR #1 设置页浅色主题可读性与窗口高度优化。'],
+        ] },
         { title: '前辈与同类插件', color: '#f472b6', items: [
           ['dafayu-pixiv-duty', 'https://github.com/kuroshio4396/dafayu-pixiv-duty', '跑一轮、预览页、点头下载的先行者。'],
           ['dsh-bili-scroll', 'https://github.com/c1overzz/dsh-bili-scroll', '刷 B 站 / 刷 P 站这波热闹的带头大哥。'],
@@ -12755,8 +12759,8 @@ const presetBox = h('div', { 'data-pg-box': 'preset' },
       ]
       const thanksWall = h('div', { 'data-pg-thanks': '' },
         h('div', { 'data-pg-thankshead': '' },
-          h('b', {}, '开源致谢墙'),
-          h('span', {}, '排名不分先后 · 没有他们就没有这些功能')),
+          h('b', {}, '致谢墙'),
+          h('span', {}, '排名不分先后 · 开源项目与提过建议的人都记在这里')),
         THANKS_GROUPS.map((g) => h('div', { key: g.title, 'data-pg-thanksgroup': '' },
           h('div', { 'data-pg-thanksgtitle': '', style: { color: g.color } }, g.title),
           h('div', { 'data-pg-thanksgrid': '' }, g.items.map((it) => h('a', {
